@@ -1,0 +1,14 @@
+{
+    "@context": [
+        "inner//atlas/contexts/space.jsonld",
+        {
+            "@base": "inner//"
+        }
+    ],
+    "@id": "space",
+    "@type": "dcat:Catalog",
+    "dcterms:title": "Inner Space",
+    "dcat:inCatalog": [
+        { "@id": "inner:atlas/locations" }
+    ]
+}

@@ -1,0 +1,15 @@
+{
+    "@context": [
+        "outer//space.jsonld",
+        {
+            "@vocab": "inner//atlas/ontologies/self#"
+        }
+    ],
+    "@id": "self",
+    "@type": "dcat:Resource",
+    "dcterms:title": "Outer Self",
+    "dcat:inCatalog": [
+        { "@id": "inner:atlas/contexts" },
+        { "@id": "inner:atlas/entities" }
+    ]
+}

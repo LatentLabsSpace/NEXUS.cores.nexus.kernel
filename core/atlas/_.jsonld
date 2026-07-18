@@ -1,0 +1,18 @@
+{
+    "@context": [
+        "inner//core/nexus.jsonld",
+        {
+            "@base": "inner//atlas/"
+        }
+    ],
+    "@id": "inner:atlas",
+    "@type": "dcat:Catalog",
+    "dcterms:title": "Atlas",
+    "dcat:catalog": [
+        { "@id": "atlas:bookmarks" },
+        { "@id": "atlas:contexts" },
+        { "@id": "atlas:entities" },
+        { "@id": "atlas:locations" },
+        { "@id": "atlas:ontologies" }
+    ]
+}

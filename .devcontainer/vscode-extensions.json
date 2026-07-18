@@ -1,0 +1,12 @@
+{
+  "recommendations": [
+    "anthropic.claude-code",
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+    "eamodio.gitlens",
+    "ms-toolsai.jupyter",
+    "ms-python.python",
+    "redhat.vscode-yaml",
+    "tamasfe.even-better-toml"
+  ]
+}

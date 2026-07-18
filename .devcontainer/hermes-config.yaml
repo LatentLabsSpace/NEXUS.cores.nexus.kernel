@@ -1,0 +1,123 @@
+# Hermes Agent config — kernel default template
+# Docs: https://hermes-agent.nousresearch.com/docs/user-guide/configuration
+
+# --- Model ---
+model:
+  provider: "anthropic"
+  default: "claude-sonnet-5"
+
+# --- Terminal ---
+terminal:
+  backend: local
+  # entrypoint-hermes.sh rewrites this to WORKSPACE_ROOT at startup.
+  cwd: "."
+  timeout: 180
+  persistent_shell: true
+
+# --- Agent ---
+agent:
+  max_turns: 90
+  reasoning_effort: ""
+  tool_use_enforcement: "auto"
+
+# --- Memory ---
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 1375
+
+# --- Compression ---
+compression:
+  enabled: true
+  threshold: 0.75
+
+# --- Display ---
+display:
+  tool_progress: all
+  tool_progress_command: true
+  streaming: false
+  compact: false
+
+# --- Streaming (gateway) ---
+streaming:
+  enabled: true
+  transport: edit
+  edit_interval: 0.3
+  buffer_threshold: 40
+
+# --- Slack ---
+# slack:
+#   require_mention: true
+#   mention_patterns:
+#     - "hey hermes"
+#     - "hermes,"
+#   unauthorized_dm_behavior: "pair"
+#   reply_prefix: ""
+
+platforms:
+  # slack:
+  #   enabled: false
+  #   reply_to_mode: "first"
+  #   extra:
+  #     reply_in_thread: true
+  #     reply_broadcast: false
+  discord:
+    enabled: true
+
+# --- Sessions ---
+group_sessions_per_user: true
+
+# --- Security ---
+security:
+  redact_secrets: true
+  tirith_enabled: false
+
+# --- Approvals ---
+approvals:
+  mode: smart
+
+# --- Checkpoints ---
+checkpoints:
+  enabled: true
+  max_snapshots: 50
+
+# --- File Read Safety ---
+file_read_max_chars: 100000
+
+# --- Skills ---
+# external_dirs is managed at runtime by entrypoint-hermes.sh based on the
+# HERMES_EXTERNAL_SKILLS env var.
+skills:
+  external_dirs: []
+  # Global disable (all platforms)
+  disabled:
+    - ascii-art
+    - ascii-video
+    - baoyu-article-illustrator
+    - baoyu-comic
+    - baoyu-infographic
+    - gif-search
+    - heartmula
+    - manim-video
+    - microsoft-graph-mail
+    - minecraft-modpack-server
+    - notion
+    - openhue
+    - p5js
+    - pixel-art
+    - pokemon-player
+    - polymarket
+    - popular-web-designs
+    - pretext
+    - python-debugpy
+    - research-paper-writing
+    - songsee
+    - songwriting-and-ai-music
+    - spotify
+    - teams-meeting-pipeline
+    - xurl
+    - yuanbao
+
+# --- Context Files ---
+# Hermes auto-detects AGENTS.md and CLAUDE.md in the workspace.

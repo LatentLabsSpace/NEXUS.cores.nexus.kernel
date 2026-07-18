@@ -1,0 +1,11 @@
+{
+    "@context": [
+        {
+            "atlas": "inner//atlas/",
+            "core": "inner//core/"
+        },
+        {
+            "@vocab": "inner//atlas/ontologies/nexus#"
+        }
+    ]
+}

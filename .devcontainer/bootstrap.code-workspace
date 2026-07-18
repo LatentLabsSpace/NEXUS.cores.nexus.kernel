@@ -1,0 +1,23 @@
+{
+    "folders": [
+        {
+            "name": "Nexus",
+            "path": "/nexus"
+        },
+        {
+            "name": "Nexus Mount",
+            "path": "/mnt/nexus"
+        },
+    ],
+    "settings": {
+        "search.useIgnoreFiles": true,
+        "search.exclude": {
+            "cargo/filesystem": true,
+            "!cargo/filesystem/nexus/**": true,
+            "codex/alien": true,
+            "/mnt/nexus": true
+        },
+        "files.exclude": {},
+        "files.eol": "\n"
+    }
+}

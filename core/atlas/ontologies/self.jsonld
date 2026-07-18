@@ -1,0 +1,14 @@
+{
+    "@context": [
+        "inner//atlas/ontologies/_.jsonld"
+    ],
+    "@id": "self",
+    "@type": [
+        "owl:Ontology",
+        "dcat:Resource"
+    ],
+    "dcterms:title": "Self Ontology",
+    "dcat:inCatalog": [
+        { "@id": "atlas:ontologies" }
+    ]
+}

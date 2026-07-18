@@ -1,0 +1,28 @@
+{
+    "@context": [
+        {
+            "@version": 1.1
+        },
+        {
+            "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+            "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+            "owl": "http://www.w3.org/2002/07/owl#"
+        },
+        "inner//atlas/contexts/dcat3.jsonld",
+        "inner//atlas/contexts/space.jsonld",
+        "inner//atlas/contexts/nexus.jsonld",
+        {
+            "@base": "inner//core/"
+        }
+    ],
+    "@id": "nexus:core",
+    "@type": [
+        "Nexus",
+        "dcat:Resource"
+    ],
+    "dcterms:title": "Core Nexus",
+    "dcterms:conformsTo": "https://www.w3.org/TR/json-ld11/",
+    "dcat:inCatalog": [
+        { "@id": "atlas:contexts" }
+    ]
+}

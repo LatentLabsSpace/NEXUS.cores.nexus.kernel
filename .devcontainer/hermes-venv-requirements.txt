@@ -1,0 +1,13 @@
+# Additional packages installed into the Hermes runtime venv beyond what
+# hermes-agent's pyproject pulls in (used by phases/runtime-bootstrap.sh
+# helpers).
+#
+# Versions are pinned (not floating) so the CI dependency scan matches concrete
+# releases rather than every known CVE for the package. These pins are the
+# versions resolved by hermes-agent's own dependency tree at the current
+# pinned-ref build, so they add no extra resolution pressure. Bump them
+# deliberately alongside a hermes-agent pin bump.
+fastapi==0.133.1
+httpx==0.28.1
+uvicorn[standard]==0.41.0
+python-dotenv==1.2.2

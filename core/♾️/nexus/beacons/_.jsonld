@@ -1,0 +1,15 @@
+{
+    "@context": [
+        "outer//nexus/_.jsonld",
+        {
+            "@base": "outer//nexus/beacons/"
+        }
+    ],
+    "@id": "outer:nexus/beacons",
+    "@type": "dcat:Catalog",
+    "dcterms:title": "Nexus Beacons",
+    "dcat:catalog": [
+        { "@id": "outer:nexus" },
+        { "@id": "atlas:entities" }
+    ]
+}

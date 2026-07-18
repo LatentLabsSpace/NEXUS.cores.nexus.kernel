@@ -1,0 +1,14 @@
+{
+  "@context": ["inner//core/nexus.jsonld", {"@base": "inner//.devcontainer/hermes-agent/"}],
+  "@id": "inner:.devcontainer/hermes-agent",
+  "@type": ["dcat:Dataset"],
+  "dcterms:title": "hermes-agent",
+  "dcterms:source": {"@id": "https://github.com/LatentLabsSpace/hermes-agent"},
+  "dcterms:description": "Hermes agent harness — the Python runtime installed into the kernel `hermes` image target. Pinned by commit SHA and installed as an editable venv checkout at build time (see Dockerfile.base hermes-deps stage), replacing the COPY-from-build-context dependency the nexus root uses via its aliens/hermes-agent submodule. This keeps the kernel buildable standalone with no submodule present in the build context.",
+  "nexus:installVia": "git-pinned-editable",
+  "nexus:cloneURL": "https://github.com/LatentLabsSpace/hermes-agent.git",
+  "nexus:pinnedRef": "79f12748022817a7c4f3fee747e45e9e6979214a",
+  "nexus:pipExtras": "[cli,mcp,slack,anthropic,web,messaging,cron]",
+  "nexus:installPrefix": "/home/node/hermes-agent",
+  "nexus:binaryName": "hermes"
+}

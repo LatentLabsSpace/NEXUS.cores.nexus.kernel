@@ -1,0 +1,17 @@
+{
+    "@context": [
+        {
+            "@vocab": "inner//atlas/ontologies/nexus#"
+        },
+        "outer//nexus/beacons/_.jsonld"
+    ],
+    "@id": "foundation",
+    "@type": [
+        "nexus:Beacon",
+        "dcat:Resource"
+    ],
+    "dcterms:title": "Foundation Nexus (Beacon)",
+    "dcat:inCatalog": [
+        { "@id": "outer:nexus/beacons" }
+    ]
+}

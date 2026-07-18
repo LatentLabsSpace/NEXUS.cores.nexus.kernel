@@ -1,0 +1,14 @@
+{
+    "@context": [
+        "inner//atlas/ontologies/_.jsonld"
+    ],
+    "@id": "space",
+    "@type": [
+        "owl:Ontology",
+        "dcat:Resource"
+    ],
+    "dcterms:title": "Space Ontology",
+    "dcat:inCatalog": [
+        { "@id": "atlas:ontologies" }
+    ]
+}

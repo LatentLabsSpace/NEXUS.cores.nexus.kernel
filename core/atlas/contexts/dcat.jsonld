@@ -1,0 +1,6 @@
+{
+    "@context": {
+        "dcterms": "http://purl.org/dc/terms/",
+        "dcat": "http://www.w3.org/ns/dcat#"
+    }
+}

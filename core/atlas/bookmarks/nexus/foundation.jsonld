@@ -1,0 +1,15 @@
+{
+    "@context": [
+        "inner//atlas/bookmarks/nexus/_.jsonld"
+    ],
+    "@id": "atlas:bookmarks/nexus/foundation",
+    "@type": [
+        "NexusBookmark",
+        "dcat:Resource"
+    ],
+    "dcterms:title": "Foundation Nexus",
+    "dcat:inCatalog": [
+        { "@id": "atlas:bookmarks/nexus" }
+    ],
+    "bookmarkAddress": "remote/nexus_foundation"
+}

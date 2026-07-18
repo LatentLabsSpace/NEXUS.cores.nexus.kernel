@@ -1,0 +1,11 @@
+{
+    "@context": [
+        "inner//core/nexus.jsonld"
+    ],
+    "@id": "nexus:kernel",
+    "@type": [
+        "Nexus",
+        "dcat:Resource"
+    ],
+    "dcterms:title": "Kernel Nexus"
+}

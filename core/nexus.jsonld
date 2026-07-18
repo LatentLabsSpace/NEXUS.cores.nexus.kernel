@@ -1,0 +1,20 @@
+{
+    "@context": [
+        "inner//atlas/contexts/nexus.jsonld",
+        "inner//space.jsonld"
+    ],
+    "@id": "nexus:foundation",
+    "@type": [
+        "Nexus",
+        "dcat:Resource"
+    ],
+    "dcterms:title": "Foundation Nexus",
+    "dcat:inCatalog": [
+        { "@id": "atlas:entities" },
+        { "@id": "atlas:locations" }
+    ],
+    "hasCore": { "@id": "core:nexus" },
+    "hasPort": { "@id": "outer:nexus" },
+    "hasBeacon": { "@id": "outer:nexus/beacons/foundation" },
+    "hasBookmark": { "@id": "atlas:bookmarks/nexus/foundation" }
+}

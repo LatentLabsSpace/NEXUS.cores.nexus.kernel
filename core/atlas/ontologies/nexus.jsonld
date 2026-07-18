@@ -1,0 +1,74 @@
+{
+    "@context": [
+        "inner//atlas/ontologies/_.jsonld"
+    ],
+    "@id": "nexus",
+    "@type": [
+        "owl:Ontology",
+        "dcat:Resource"
+    ],
+    "dcterms:title": "Nexus Ontology",
+    "dcat:inCatalog": [
+        { "@id": "atlas:ontologies" }
+    ],
+    "@graph": [
+        {
+            "@id": "Nexus",
+            "@type": "owl:Class",
+            "rdfs:label": "Nexus",
+            "rdfs:comment": "A foundation architecture for exploring the ♾️."
+        },
+        {
+            "@id": "NexusBeacon",
+            "@type": "owl:Class",
+            "rdfs:label": "NexusBeacon",
+            "rdfs:comment": "Configurable I/O data link for Nexus networking."
+        },
+        {
+            "@id": "NexusBookmark",
+            "@type": "owl:Class",
+            "rdfs:label": "NexusBookmark",
+            "rdfs:comment": "Named bookmark which tracks a specific Nexus across commits - or at a fixed point."
+        },
+        {
+            "@id": "hasCore",
+            "@type": "owl:ObjectProperty",
+            "rdfs:label": "Has Core",
+            "rdfs:domain": { "@id": "Nexus" },
+            "rdfs:range": { "@id": "Nexus" },
+            "rdfs:comment": "Link to this Nexus' inner core."
+        },
+        {
+            "@id": "hasPort",
+            "@type": "owl:ObjectProperty",
+            "rdfs:label": "Has Core",
+            "rdfs:domain": { "@id": "Nexus" },
+            "rdfs:range": { "@id": "owl:Thing" },
+            "rdfs:comment": "Link to this Nexus' external port."
+        },
+        {
+            "@id": "hasBeacon",
+            "@type": "owl:ObjectProperty",
+            "rdfs:label": "Has Beacon",
+            "rdfs:domain": { "@id": "Nexus" },
+            "rdfs:range": { "@id": "NexusBeacon" },
+            "rdfs:comment": "Link to an external data beacon."
+        },
+        {
+            "@id": "hasBookmark",
+            "@type": "owl:ObjectProperty",
+            "rdfs:label": "Has Bookmark",
+            "rdfs:domain": { "@id": "Nexus" },
+            "rdfs:range": { "@id": "NexusBookmark" },
+            "rdfs:comment": "Links to a bookmark managed by this Nexus."
+        },
+        {
+            "@id": "bookmarkAddress",
+            "@type": "owl:DatatypeProperty",
+            "rdfs:domain": { "@id": "NexusBookmark" },
+            "rdfs:range": { "@id": "xsd:string" },
+            "rdfs:label": "Bookmark Address",
+            "rdfs:comment": "A bookmark's address."
+        }
+    ]
+}

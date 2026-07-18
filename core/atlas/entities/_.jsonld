@@ -1,0 +1,12 @@
+{
+    "@context": [
+        "inner//atlas/_.jsonld",
+        {
+            "@base": "inner//atlas/entities/"
+        }
+    ],
+    "@id": "atlas:entities",
+    "@type": "dcat:Catalog",
+    "dcterms:title": "Atlas Entities",
+    "dcat:inCatalog": { "@id": "inner:atlas" }
+}

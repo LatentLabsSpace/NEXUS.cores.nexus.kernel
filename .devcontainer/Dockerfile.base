@@ -1,0 +1,204 @@
+# syntax=docker/dockerfile:1.7
+FROM node:20 AS kernel-base
+
+ARG TZ
+ENV TZ="$TZ"
+
+ARG CLAUDE_CODE_VERSION=latest
+
+# Install basic development tools and iptables/ipset
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  less \
+  git \
+  procps \
+  sudo \
+  fzf \
+  zsh \
+  man-db \
+  unzip \
+  gnupg2 \
+  gh \
+  iptables \
+  ipset \
+  iproute2 \
+  dnsutils \
+  aggregate \
+  jq \
+  nano \
+  vim \
+  cron \
+  git-lfs \
+  tmux \
+  && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install Docker CLI + Compose plugin (for Docker-outside-of-Docker via socket mount)
+RUN install -m 0755 -d /etc/apt/keyrings && \
+  curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && \
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list && \
+  apt-get update && apt-get install -y --no-install-recommends \
+  docker-ce-cli \
+  docker-compose-plugin \
+  && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Ensure default node user has access to /usr/local/share
+RUN mkdir -p /usr/local/share/npm-global && \
+  chown -R node:node /usr/local/share
+
+ARG USERNAME=node
+
+# Add node to docker group for socket access (GID must match host socket owner)
+ARG DOCKER_GID=989
+RUN (getent group docker > /dev/null && groupmod -g $DOCKER_GID docker || groupadd -g $DOCKER_GID docker) \
+  && usermod -aG docker $USERNAME
+
+# Persist bash history
+RUN SNIPPET="export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
+  && mkdir /commandhistory \
+  && touch /commandhistory/.bash_history \
+  && chown -R $USERNAME /commandhistory
+
+ENV DEVCONTAINER=true
+
+# Create workspace and config directories
+RUN mkdir -p /workspace /in /out /home/node/.claude && \
+  chown -R node:node /workspace /in /out /home/node/.claude
+
+WORKDIR /workspace
+
+ARG GIT_DELTA_VERSION=0.18.2
+RUN ARCH=$(dpkg --print-architecture) && \
+  wget "https://github.com/dandavison/delta/releases/download/${GIT_DELTA_VERSION}/git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb" && \
+  sudo dpkg -i "git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb" && \
+  rm "git-delta_${GIT_DELTA_VERSION}_${ARCH}.deb"
+
+# mise (runtime manager)
+ENV MISE_DATA_DIR=/opt/mise \
+    MISE_CONFIG_DIR=/etc/mise \
+    MISE_CACHE_DIR=/opt/mise/cache \
+    MISE_TRUSTED_CONFIG_PATHS=/workspace/.mise.toml
+
+RUN curl https://mise.run | sh && \
+    cp /root/.local/bin/mise /usr/local/bin/mise && \
+    mkdir -p /opt/mise /etc/mise /opt/mise/cache && \
+    mise use -g node@22 && \
+    mise use -g python@3.12 && \
+    mise use -g uv@latest && \
+    mise reshim && \
+    chown -R node:node /opt/mise /etc/mise
+
+ENV PATH="/opt/mise/shims:${PATH}"
+
+USER node
+
+ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
+ENV PATH=$PATH:/usr/local/share/npm-global/bin
+ENV SHELL=/bin/zsh
+ENV EDITOR=nano
+ENV VISUAL=nano
+
+ARG ZSH_IN_DOCKER_VERSION=1.2.0
+RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/v${ZSH_IN_DOCKER_VERSION}/zsh-in-docker.sh)" -- \
+  -p git \
+  -p fzf \
+  -a "source /usr/share/doc/fzf/examples/key-bindings.zsh" \
+  -a "source /usr/share/doc/fzf/examples/completion.zsh" \
+  -a "export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
+  -a 'eval "$(mise activate zsh)"' \
+  -x
+
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+
+# Copy firewall script and universal required allowlists
+COPY .devcontainer/init-firewall.sh /usr/local/bin/
+COPY .devcontainer/firewall.d/_required/ /usr/local/bin/firewall.d/_required/
+
+USER root
+RUN chmod +x /usr/local/bin/init-firewall.sh && \
+  echo "node ALL=(root) NOPASSWD: SETENV: /usr/local/bin/init-firewall.sh" > /etc/sudoers.d/node-firewall && \
+  chmod 0440 /etc/sudoers.d/node-firewall
+USER node
+
+
+# =============================================================================
+# Hermes Agent Dependencies — adds the hermes-agent Python venv on top of
+# kernel-base. Slim extras set (no playwright / no voice / no heavy cloud
+# SDKs); add extras via the pin file's nexus:pipExtras if an agent needs them.
+# =============================================================================
+FROM kernel-base AS hermes-deps
+
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gosu \
+    build-essential \
+    python3-dev \
+    libffi-dev \
+    ripgrep \
+  && apt-get clean && rm -rf /var/lib/apt/lists/*
+USER node
+
+ENV PYTHONUNBUFFERED=1 \
+    COPILOT_CLI_PREFIX=/usr/local/share/npm-global
+
+# Install the hermes-agent harness into a dedicated venv. Unlike the nexus root
+# (which COPYs from its aliens/hermes-agent submodule), the kernel clones the
+# public repo at a pinned commit driven by .devcontainer/hermes-agent/_.jsonld
+# — the same version-pin pattern used for jj and flyctl at the root. This keeps
+# the image buildable from the kernel directory alone, with no aliens/ submodule
+# in the build context. The clone is shallow at the pinned SHA (a branch tip on
+# the public repo) and installed editable to preserve the PYTHONPATH semantics
+# the root relies on.
+COPY --chown=node:node .devcontainer/hermes-agent/_.jsonld /tmp/hermes-agent.jsonld
+COPY --chown=node:node .devcontainer/hermes-venv-requirements.txt /tmp/hermes-venv-requirements.txt
+RUN HERMES_CLONE_URL=$(jq -r '."nexus:cloneURL"' /tmp/hermes-agent.jsonld) && \
+    HERMES_REF=$(jq -r '."nexus:pinnedRef"' /tmp/hermes-agent.jsonld) && \
+    HERMES_EXTRAS=$(jq -r '."nexus:pipExtras"' /tmp/hermes-agent.jsonld) && \
+    HERMES_DIR=$(jq -r '."nexus:installPrefix"' /tmp/hermes-agent.jsonld) && \
+    { [ -n "$HERMES_CLONE_URL" ] && [ "$HERMES_CLONE_URL" != "null" ] && \
+      [ -n "$HERMES_REF" ] && [ "$HERMES_REF" != "null" ] && \
+      [ -n "$HERMES_DIR" ] && [ "$HERMES_DIR" != "null" ]; } \
+      || (echo "ERROR: hermes-agent pin missing cloneURL/pinnedRef/installPrefix" && exit 1) && \
+    git init -q "$HERMES_DIR" && \
+    cd "$HERMES_DIR" && \
+    git remote add origin "$HERMES_CLONE_URL" && \
+    git fetch --depth 1 origin "$HERMES_REF" && \
+    git checkout -q FETCH_HEAD && \
+    mise exec -- uv venv venv --python 3.12 && \
+    VIRTUAL_ENV="$HERMES_DIR/venv" mise exec -- uv pip install --no-cache-dir \
+      -e ".${HERMES_EXTRAS}" && \
+    VIRTUAL_ENV="$HERMES_DIR/venv" mise exec -- uv pip install --no-cache-dir \
+      -r /tmp/hermes-venv-requirements.txt && \
+    mkdir -p /home/node/.local/bin && \
+    ln -sf "$HERMES_DIR/venv/bin/hermes" /home/node/.local/bin/hermes && \
+    rm -f /tmp/hermes-agent.jsonld /tmp/hermes-venv-requirements.txt
+
+ENV PATH="/home/node/.local/bin:${PATH}" \
+    PYTHONPATH="/home/node/hermes-agent"
+
+
+# =============================================================================
+# Hermes Agent — thin config layer on top of hermes-deps.
+# Only entrypoint, scripts, and default config files live here so that
+# changes to these files rebuild in seconds.
+# =============================================================================
+FROM hermes-deps AS hermes
+
+USER root
+RUN mkdir -p /home/node/.hermes/{cron,sessions,logs,memories,skills,hooks,skins,plans,workspace,home} \
+    && mkdir -p /home/node/.copilot \
+    && chown -R node:node /home/node/.hermes /home/node/.copilot
+
+COPY .devcontainer/entrypoint-hermes.sh /usr/local/bin/
+COPY .devcontainer/hermes-entrypoint/ /usr/local/share/hermes-entrypoint/
+COPY .devcontainer/hermes-config.yaml /usr/local/share/hermes-defaults/config.yaml.default
+COPY .devcontainer/hermes-soul.default.md /usr/local/share/hermes-defaults/SOUL.md.default
+
+RUN chmod +x /usr/local/bin/entrypoint-hermes.sh && \
+    find /usr/local/share/hermes-entrypoint -type d -exec chmod 0755 {} + && \
+    find /usr/local/share/hermes-entrypoint -type f -exec chmod 0644 {} + && \
+    chown -R root:root /usr/local/share/hermes-entrypoint && \
+    chown -R node:node /usr/local/share/hermes-defaults
+
+ENV HERMES_HOME=/home/node/.hermes \
+    HERMES_WORKSPACE_PATH=/workspace \
+    DEFAULT_WORKSPACE_ROOT=/workspace
+# Entrypoint starts as root for state-link bootstrap, then drops to node via gosu.

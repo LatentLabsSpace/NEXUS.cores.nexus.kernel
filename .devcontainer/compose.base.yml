@@ -1,0 +1,63 @@
+services:
+  nexus-kernel-base:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile.base
+      target: kernel-base
+      args:
+        TZ: ${TZ:-America/Los_Angeles}
+        CLAUDE_CODE_VERSION: latest
+        GIT_DELTA_VERSION: "0.18.2"
+        ZSH_IN_DOCKER_VERSION: "1.2.0"
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      NODE_OPTIONS: "--max-old-space-size=4096"
+      CLAUDE_CONFIG_DIR: /home/node/.claude
+      POWERLEVEL9K_DISABLE_GITSTATUS: "true"
+      MISE_DATA_DIR: /opt/mise
+      MISE_CONFIG_DIR: /etc/mise
+      MISE_CACHE_DIR: /opt/mise/cache
+      FIREWALL_MODULES: ${FIREWALL_MODULES:-all}
+
+  # Generic hermes-agent service built from the `hermes` image target. No
+  # container_name / image / volume here — downstream consumers set those (and
+  # any per-agent env_file) when they extend this service. The baked entrypoint
+  # bootstraps the workspace, links agent state under quarters/crew/$AGENT_NAME,
+  # initializes the firewall, then runs hermes in $HERMES_MODE. Defaults to
+  # HERMES_MODE=sleep so the container boots for VS Code attach even before any
+  # platform credentials are configured.
+  hermes:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile.base
+      target: hermes
+      args:
+        TZ: ${TZ:-America/Los_Angeles}
+        CLAUDE_CODE_VERSION: latest
+        GIT_DELTA_VERSION: "0.18.2"
+        ZSH_IN_DOCKER_VERSION: "1.2.0"
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    command: /usr/local/bin/entrypoint-hermes.sh
+    environment:
+      NODE_OPTIONS: "--max-old-space-size=4096"
+      POWERLEVEL9K_DISABLE_GITSTATUS: "true"
+      MISE_DATA_DIR: /opt/mise
+      MISE_CONFIG_DIR: /etc/mise
+      MISE_CACHE_DIR: /opt/mise/cache
+      FIREWALL_MODULES: ${FIREWALL_MODULES:-all}
+      # --- Workspace bootstrap (entrypoint-base contract) ---
+      AGENT_NAME: ${AGENT_NAME:-hermes}
+      NEXUS_REPO_URL: ${NEXUS_REPO_URL:-}
+      NEXUS_TARGET_BRANCH: ${NEXUS_TARGET_BRANCH:-dev}
+      # Host-shell fallback for first-boot clone auth; a per-agent env_file's
+      # GH_TOKEN wins inside the bootstrap.
+      HOST_GH_TOKEN: ${GH_TOKEN:-}
+      # --- Hermes runtime ---
+      HERMES_MODE: ${HERMES_MODE:-sleep}
+      HERMES_WORKSPACE_PATH: ${HERMES_WORKSPACE_PATH:-/workspace}
+      HERMES_HOME: /home/node/.hermes
+      HERMES_SOUL_PATH: /home/node/.hermes/SOUL.md

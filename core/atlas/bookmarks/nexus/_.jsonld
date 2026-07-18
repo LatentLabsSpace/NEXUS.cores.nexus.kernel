@@ -1,0 +1,14 @@
+{
+    "@context": [
+        "inner//atlas/bookmarks/_.jsonld",
+        {
+            "@base": "inner//atlas/bookmarks/nexus/"
+        }
+    ],
+    "@id": "atlas:bookmarks/nexus",
+    "@type": "dcat:Catalog",
+    "dcterms:title": "Nexus Bookmarks",
+    "dcat:inCatalog": [
+        { "@id": "atlas:bookmarks" }
+    ]
+}

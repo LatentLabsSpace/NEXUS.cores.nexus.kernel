@@ -1,0 +1,15 @@
+{
+    "@context": [
+        "outer//space.jsonld",
+        {
+            "@base": "outer//nexus/"
+        }
+    ],
+    "@id": "outer:nexus",
+    "@type": "dcat:Catalog",
+    "dcterms:title": "Outer Nexus",
+    "dcat:catalog": [
+        { "@id": "inner:atlas/entities" },
+        { "@id": "inner:atlas/locations" }
+    ]
+}
