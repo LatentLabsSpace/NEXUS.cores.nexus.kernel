@@ -1,0 +1,32 @@
+{
+  "name": "{{SERVICE_PREFIX}}",
+  "dockerComposeFile": ["../compose.yml"],
+  "service": "{{AGENT_NAME}}",
+  "runServices": ["{{AGENT_NAME}}"],
+  "workspaceFolder": "/workspace",
+  "remoteUser": "node",
+  // entrypoint-hermes.sh must run as the container command: it clones the
+  // repo into the workspace volume, links agent state under
+  // quarters/crew/{{AGENT_NAME}}/, initializes the firewall, then drops to
+  // the node user. Overriding it with the devcontainer default sleep would
+  // skip the whole bootstrap.
+  "overrideCommand": false,
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "eamodio.gitlens",
+        "ms-python.python",
+        "redhat.vscode-yaml",
+        "tamasfe.even-better-toml"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "terminal.integrated.profiles.linux": {
+          "zsh": { "path": "zsh" },
+          "bash": { "path": "bash", "icon": "terminal-bash" }
+        }
+      }
+    }
+  }
+}

@@ -6,4 +6,5 @@
 ## Folders
 | Name | Description |
 |------|-------------|
-| `_required/` | Universal required firewall allowlists — loaded by every downstream project that extends the kernel base image |
+| `_required/` | Universal hard-required allowlists — always loaded; a DNS miss aborts the boot |
+| `_optional/` | Universal optional allowlists — always loaded; a DNS miss warns and continues |

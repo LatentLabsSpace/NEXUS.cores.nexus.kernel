@@ -1,0 +1,9 @@
+# Runtime-only state linked here by the kernel hermes entrypoint — never in git.
+.bashhistory
+.claude
+.copilot
+.ssh
+.vscode-server
+
+# Per-agent credentials (template is checked in, the real file never is).
+.env

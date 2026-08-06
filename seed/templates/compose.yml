@@ -1,0 +1,71 @@
+# {{SERVICE_PREFIX}} agent runtime — thin consumer of the pinned nexus kernel at
+# cores/nexus/kernel (see CLAUDE.md "Nexus kernel" for the bump convention).
+#
+#   docker compose up -d --build {{AGENT_NAME}}   # build + boot (sleep mode)
+#
+# Prefer `--build` (or an explicit `docker compose build` first): plain `up`
+# reuses whatever image already carries the tag, which silently skips this
+# repo's layer after a kernel bump.
+#
+# First boot clones this repo into the named workspace volume and links agent
+# state to quarters/crew/{{AGENT_NAME}}/ inside that clone. Credentials come
+# from quarters/crew/{{AGENT_NAME}}/.env in THIS checkout; see the
+# .env.template next to it.
+
+services:
+  # Build-only service: produces the kernel hermes image from the pinned
+  # submodule. `deploy.replicas: 0` means `docker compose build` builds it
+  # (before {{AGENT_NAME}}, which consumes it via a `service:` additional
+  # context) but `up` never starts a container for it.
+  kernel-hermes:
+    extends:
+      file: cores/nexus/kernel/.devcontainer/compose.base.yml
+      service: hermes
+    build:
+      context: ./cores/nexus/kernel
+      dockerfile: .devcontainer/Dockerfile.base
+      target: hermes
+    image: {{SERVICE_PREFIX}}/kernel-hermes:latest
+    deploy:
+      replicas: 0
+
+  {{AGENT_NAME}}:
+    extends:
+      file: cores/nexus/kernel/.devcontainer/compose.base.yml
+      service: hermes
+    # Namespaced under {{SERVICE_PREFIX}}/ so the tag can't collide with an
+    # image another compose file already owns on the operator's host. A bare
+    # `{{AGENT_NAME}}:latest` that some other stack also builds makes `up`
+    # silently run that stale image instead of this one.
+    image: {{SERVICE_PREFIX}}/hermes:latest
+    container_name: {{AGENT_NAME}}
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+      additional_contexts:
+        # The built kernel image, used as the Dockerfile's FROM base. `FROM`
+        # cannot reference a Dockerfile path inside a directory context — a
+        # `service:` image context is the mechanism that works.
+        kernel-hermes-image: "service:kernel-hermes"
+    volumes:
+      - {{AGENT_NAME}}-workspace:/workspace
+    env_file:
+      # Per-agent env file in the host checkout; template lives next to it.
+      - path: quarters/crew/{{AGENT_NAME}}/.env
+        required: false
+    environment:
+      # Only hardcoded literals and !reset entries belong here. A key written
+      # as `KEY: ${KEY:-default}` interpolates against the OPERATOR's shell /
+      # project .env — not the per-agent env_file above — and then overrides
+      # whatever the env_file set, because `environment:` beats `env_file:`.
+      AGENT_NAME: {{AGENT_NAME}}
+      NEXUS_REPO_URL: {{REPO_URL}}
+      NEXUS_TARGET_BRANCH: dev
+      # Inherited from the kernel service as host-interpolated defaults; reset
+      # so the per-agent env_file is the single config surface for them.
+      HERMES_MODE: !reset null
+      FIREWALL_MODULES: !reset null
+
+volumes:
+  {{AGENT_NAME}}-workspace:
+    name: {{AGENT_NAME}}-workspace

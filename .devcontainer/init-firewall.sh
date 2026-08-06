@@ -96,8 +96,17 @@ echo "Added S3 supernets for LFS"
 
 DROPIN_DIR="$(dirname "$0")/firewall.d"
 
-# Load universal required domains from firewall.d/_required/*.conf.
-# These are always loaded regardless of FIREWALL_MODULES.
+# Load universal kernel domains. Both directories are always loaded,
+# regardless of FIREWALL_MODULES — they differ only in failure semantics:
+#
+#   _required/  hard-fail: a DNS miss aborts the boot. Reserve this for
+#               domains without which the container is genuinely unusable.
+#   _optional/  warn-and-skip: a DNS miss logs a warning and continues.
+#               Everything else — telemetry, marketplaces, package indexes.
+#
+# Keep _required/ minimal. A domain listed there is a boot-blocker for every
+# downstream consumer the day its DNS changes; statsig.anthropic.com went
+# NXDOMAIN in July 2026 and bricked consumer boots for exactly that reason.
 REQUIRED_DOMAINS=()
 OPTIONAL_DOMAINS=()
 for _conf in "$DROPIN_DIR/_required"/*.conf; do
@@ -106,6 +115,14 @@ for _conf in "$DROPIN_DIR/_required"/*.conf; do
         _line="${_line%%#*}"; _line="${_line// /}"
         [ -z "$_line" ] && continue
         REQUIRED_DOMAINS+=("$_line")
+    done < "$_conf"
+done
+for _conf in "$DROPIN_DIR/_optional"/*.conf; do
+    [ -f "$_conf" ] || continue
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        _line="${_line%%#*}"; _line="${_line// /}"
+        [ -z "$_line" ] && continue
+        OPTIONAL_DOMAINS+=("$_line")
     done < "$_conf"
 done
 
