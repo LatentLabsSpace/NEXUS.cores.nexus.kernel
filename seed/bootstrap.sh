@@ -17,7 +17,7 @@
 set -euo pipefail
 
 KERNEL_PATH="cores/nexus/kernel"
-DEFAULT_KERNEL_URL="https://github.com/LatentLabsSpace/NEXUS-cores-nexus-kernel.git"
+DEFAULT_KERNEL_URL="https://github.com/LatentLabsSpace/NEXUS.cores.nexus.kernel.git"
 
 SEED_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE_DIR="$SEED_DIR/templates"

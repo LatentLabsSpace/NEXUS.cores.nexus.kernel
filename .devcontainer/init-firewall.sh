@@ -207,6 +207,62 @@ echo "Host network detected as: $HOST_NETWORK"
 iptables -A INPUT -s "$HOST_NETWORK" -j ACCEPT
 iptables -A OUTPUT -d "$HOST_NETWORK" -j ACCEPT
 
+# --- Compose-network peers -------------------------------------------------
+# Sibling services (the beads server, a database, any compose service reached
+# by DNS alias) live on RFC1918 addresses that the domain allowlist above
+# cannot express: they have no public name to resolve, and their addresses are
+# assigned per-`docker compose up`.
+#
+# The HOST_NETWORK rule above covers only the gateway's /24, which is NOT the
+# whole network. Docker's default address pool hands out /16 subnets, so a peer
+# at 172.20.0.x is reachable while an otherwise identical peer at 172.20.5.x is
+# dropped — a silent, address-assignment-dependent failure that surfaces as a
+# client hang. Measured on the kernel firewall before this rule existed:
+# 172.31.0.9 -> 172.31.5.5:3307 on a /16 compose network failed with "No route
+# to host" while the same pair inside the gateway /24 succeeded.
+#
+# So: allow the networks this container is ACTUALLY attached to, derived from
+# its own interfaces. Scope is deliberately narrow — the container's own docker
+# networks, nothing else. It does not open the host LAN or the internet, and it
+# grants no reachability a compose peer on the gateway /24 didn't already have.
+# Set FIREWALL_ALLOW_LOCAL_NETWORKS=0 to opt out (a container that must not talk
+# to its own compose siblings at all).
+#
+# Not a `firewall.d/` drop-in: those tiers describe DNS-resolvable domains and
+# differ only in resolution-failure semantics. This is a link-layer fact about
+# the container, so it is always applied and warns (never aborts) if the
+# interface list can't be read.
+_cidr_network() {
+    local cidr="$1"
+    local addr="${cidr%%/*}"
+    local bits="${cidr##*/}"
+    local o1 o2 o3 o4
+    IFS=. read -r o1 o2 o3 o4 <<< "$addr"
+    local ipnum=$(( (o1 << 24) | (o2 << 16) | (o3 << 8) | o4 ))
+    local mask=$(( bits == 0 ? 0 : (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF ))
+    local net=$(( ipnum & mask ))
+    echo "$(( (net >> 24) & 255 )).$(( (net >> 16) & 255 )).$(( (net >> 8) & 255 )).$(( net & 255 ))/$bits"
+}
+
+if [ "${FIREWALL_ALLOW_LOCAL_NETWORKS:-1}" = "0" ]; then
+    echo "FIREWALL_ALLOW_LOCAL_NETWORKS=0 — skipping compose-network allowance"
+else
+    _local_cidrs=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' || true)
+    if [ -z "$_local_cidrs" ]; then
+        echo "WARN: no global-scope IPv4 addresses found; skipping compose-network allowance"
+    fi
+    for _cidr in $_local_cidrs; do
+        if [[ ! "$_cidr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; then
+            echo "WARN: unparseable interface CIDR '$_cidr', skipping"
+            continue
+        fi
+        _net=$(_cidr_network "$_cidr")
+        echo "Allowing container network $_net (from interface $_cidr)"
+        iptables -A INPUT -s "$_net" -j ACCEPT
+        iptables -A OUTPUT -d "$_net" -j ACCEPT
+    done
+fi
+
 # Set default policies to DROP first
 iptables -P INPUT DROP
 iptables -P FORWARD DROP

@@ -27,7 +27,7 @@ If the kernel submodule isn't present yet, the script adds it — so you can als
 run it from a standalone clone of the kernel:
 
 ```bash
-git clone https://github.com/LatentLabsSpace/NEXUS-cores-nexus-kernel.git /tmp/kernel
+git clone https://github.com/LatentLabsSpace/NEXUS.cores.nexus.kernel.git /tmp/kernel
 cd /path/to/target/repo && /tmp/kernel/seed/bootstrap.sh --repo-url ...
 ```
 

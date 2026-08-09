@@ -1,0 +1,38 @@
+{
+  "@context": ["inner//core/nexus.jsonld", {"@base": "inner//.devcontainer/beads/"}],
+  "@id": "inner:.devcontainer/beads",
+  "@type": ["dcat:Dataset"],
+  "dcterms:title": "beads",
+  "dcterms:source": {"@id": "https://github.com/LatentLabsSpace/beads"},
+  "dcterms:description": "Beads — the Dolt-backed distributed task graph the kernel ships as its shared work substrate. The `bd` CLI is built from source in the throwaway `beads-build` stage and copied into `beads-base`, which every agent image (hermes, and later gascity) re-parents onto. The fork publishes no releases or tags, so the pin is a full commit SHA on `main`. Build is CGO_ENABLED=1 (embedded Dolt needs cgo) with -tags=gms_pure_go, which is what `make build` does; the tag drops the ICU shared-library dependency, so neither the builder nor the runtime layer needs libicu (see the fork's engdocs/ICU-POLICY.md).",
+  "nexus:installVia": "source-build",
+  "nexus:cloneURL": "https://github.com/LatentLabsSpace/beads.git",
+  "nexus:pinnedRef": "8c7db45c8b1641803c48524aafde3f19a1599b33",
+  "nexus:buildCommand": "make build",
+  "nexus:buildImage": "golang:1.26-trixie",
+  "nexus:binaryName": "bd",
+  "nexus:installPrefix": "/usr/local/bin",
+  "nexus:requires": [
+    {
+      "@id": "inner:.devcontainer/beads#dolt",
+      "@type": ["dcat:Dataset"],
+      "dcterms:title": "dolt",
+      "dcterms:source": {"@id": "https://github.com/dolthub/dolt"},
+      "dcterms:description": "Dolt — the versioned SQL database under Beads. Installed from the upstream release tarball; `dolt sql-server` is what the kernel's `beads-server` target runs, and bd clients in server mode connect to it over the compose network. Floor is >= 2.1.0: the beads fork's docs flag that pre-1.86.2 builds miss the GC/writer deadlock fix (dolthub/dolt ccf7bde206). 2.2.x also matches the dolthub/driver/v2 v2.2.0 the pinned bd depends on.",
+      "dcterms:license": {"@id": "https://spdx.org/licenses/Apache-2.0"},
+      "dcterms:hasVersion": "2.2.3",
+      "nexus:installVia": "binary-tarball",
+      "nexus:downloadURLTemplate": "https://github.com/dolthub/dolt/releases/download/v{version}/dolt-linux-{arch}.tar.gz",
+      "nexus:archMap": {
+        "amd64": "amd64",
+        "arm64": "arm64"
+      },
+      "nexus:sha256": {
+        "amd64": "ffafa7cc172cada5f77ca3fb96306545ddac44a111625f75f870306c7f197301",
+        "arm64": "5e8f4dbe61931c36f8359022ee32337e5daf65aba06a29791a066e50677c8b3a"
+      },
+      "nexus:binaryName": "dolt",
+      "nexus:installPrefix": "/usr/local/bin"
+    }
+  ]
+}

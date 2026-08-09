@@ -5,7 +5,7 @@ echo "=== nexus-kernel-base entrypoint ==="
 
 WORKSPACE="${NEXUS_WORKSPACE:-/workspace}"
 REPO_URL="${NEXUS_REPO_URL:-}"
-BRANCH="${NEXUS_BRANCH:-main}"
+BRANCH="${NEXUS_BRANCH:-dev}"
 
 # --- Repo bootstrap ---
 if [ -n "$REPO_URL" ] && [ ! -d "$WORKSPACE/.git" ]; then

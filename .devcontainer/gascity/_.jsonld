@@ -1,0 +1,15 @@
+{
+  "@context": ["inner//core/nexus.jsonld", {"@base": "inner//.devcontainer/gascity/"}],
+  "@id": "inner:.devcontainer/gascity",
+  "@type": ["dcat:Dataset"],
+  "dcterms:title": "gascity",
+  "dcterms:source": {"@id": "https://github.com/LatentLabsSpace/gascity"},
+  "dcterms:description": "Gas City — the bead-native multi-agent orchestrator the kernel ships as its `gascity` image target. The `gc` binary is built from source in the throwaway `gascity-build` stage and copied into the `gascity` stage (FROM beads-base, so bd + dolt + flock arrive from the layer). The fork publishes no releases or tags, so the pin is a full commit SHA on `main`. Build is CGO_ENABLED=0 `make build` — the fork's own release configuration (.goreleaser.yml sets CGO_ENABLED=0 for every published binary) — which yields a fully static binary with NO libicu dependency, so no ICU package is installed in either stage. The upstream docs' libicu-dev prerequisite applies only to CGO-enabled builds (the Makefile's ICU blocks are all CGO plumbing); verified empirically via ldd at pin time. Runtime deps (tmux, jq, git, dolt >= 2.1.0, bd, flock) all arrive from kernel-base and beads-base.",
+  "nexus:installVia": "source-build",
+  "nexus:cloneURL": "https://github.com/LatentLabsSpace/gascity.git",
+  "nexus:pinnedRef": "489309232cc2da2f45d1762fce9ffcb0f4bb87be",
+  "nexus:buildCommand": "CGO_ENABLED=0 make build",
+  "nexus:buildImage": "golang:1.26-trixie",
+  "nexus:binaryName": "gc",
+  "nexus:installPrefix": "/usr/local/bin"
+}

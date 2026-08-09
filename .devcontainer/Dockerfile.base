@@ -127,11 +127,135 @@ USER node
 
 
 # =============================================================================
-# Hermes Agent Dependencies — adds the hermes-agent Python venv on top of
-# kernel-base. Slim extras set (no playwright / no voice / no heavy cloud
-# SDKs); add extras via the pin file's nexus:pipExtras if an agent needs them.
+# Beads builder — THROWAWAY. Compiles the `bd` CLI from the pinned fork. The Go
+# toolchain never reaches a shipped layer; only the binary is COPYed out.
+#
+# The fork publishes no releases or tags, so the pin is a full commit SHA
+# (.devcontainer/beads/_.jsonld), fetched shallow like the hermes-agent pin.
+#
+# `make build` is the canonical target: CGO_ENABLED=1 (embedded Dolt needs cgo)
+# with -tags=gms_pure_go. The tag swaps go-mysql-server's ICU-backed regex for
+# Go's stdlib regexp, so the binary carries NO libicu dependency — the fork
+# treats that as non-negotiable policy (engdocs/ICU-POLICY.md), which is why
+# neither this stage nor beads-base installs ICU. A bare `go build` without the
+# tag would fail on a missing unicode/uregex.h instead.
+#
+# The builder base must stay on the same Debian release as kernel-base: cgo
+# links bd against the builder's glibc, and a trixie->bookworm mismatch would
+# only surface at container start.
 # =============================================================================
-FROM kernel-base AS hermes-deps
+FROM golang:1.26-trixie AS beads-build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    make \
+    jq \
+  && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY .devcontainer/beads/_.jsonld /tmp/beads.jsonld
+RUN BEADS_CLONE_URL=$(jq -r '."nexus:cloneURL"' /tmp/beads.jsonld) && \
+    BEADS_REF=$(jq -r '."nexus:pinnedRef"' /tmp/beads.jsonld) && \
+    { [ -n "$BEADS_CLONE_URL" ] && [ "$BEADS_CLONE_URL" != "null" ] && \
+      [ -n "$BEADS_REF" ] && [ "$BEADS_REF" != "null" ]; } \
+      || (echo "ERROR: beads pin missing cloneURL/pinnedRef" && exit 1) && \
+    mkdir -p /out && \
+    git init -q /usr/src/beads && \
+    cd /usr/src/beads && \
+    git remote add origin "$BEADS_CLONE_URL" && \
+    git fetch --depth 1 origin "$BEADS_REF" && \
+    git checkout -q FETCH_HEAD && \
+    make build && \
+    install -m 0755 /usr/src/beads/bd /out/bd
+
+
+# =============================================================================
+# Beads substrate — the `bd` CLI plus the Dolt engine it stores the task graph
+# in. Every agent image re-parents onto this layer, so an agent container in any
+# consumer org can talk to the org's shared beads graph by construction.
+#
+# kernel-base itself deliberately stays lean: non-agent consumers that only want
+# the dev environment don't pay for ~140 MB of task-graph substrate.
+# =============================================================================
+FROM kernel-base AS beads-base
+
+USER root
+
+# flock: beads takes advisory locks around Dolt maintenance operations. Present
+# in node:22-trixie via util-linux already; named here so the contract survives
+# a base-image change.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    util-linux \
+  && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Dolt from the pinned upstream release tarball (a static Go binary — no runtime
+# library deps). Version floor is >= 2.1.0; see the pin file for why.
+#
+# The tarball is verified against a per-arch sha256 in the pin file. bd gets a
+# full-commit-SHA pin for supply-chain integrity; a version+URL fetch alone
+# would not match that bar, since a re-pushed tag or a swapped release asset
+# installs silently. Bumping the dolt version means updating both the version
+# and the digests.
+COPY .devcontainer/beads/_.jsonld /tmp/beads.jsonld
+RUN jq -e '."nexus:requires"[] | select(."dcterms:title"=="dolt")' /tmp/beads.jsonld \
+      > /tmp/dolt.jsonld && \
+    ARCH=$(dpkg --print-architecture) && \
+    DOLT_VERSION=$(jq -r '."dcterms:hasVersion"' /tmp/dolt.jsonld) && \
+    DOLT_ARCH=$(jq -r --arg a "$ARCH" '."nexus:archMap"[$a]' /tmp/dolt.jsonld) && \
+    DOLT_URL=$(jq -r --arg v "$DOLT_VERSION" --arg a "$DOLT_ARCH" \
+      '."nexus:downloadURLTemplate" | gsub("\\{version\\}"; $v) | gsub("\\{arch\\}"; $a)' \
+      /tmp/dolt.jsonld) && \
+    DOLT_SHA256=$(jq -r --arg a "$ARCH" '."nexus:sha256"[$a]' /tmp/dolt.jsonld) && \
+    { [ -n "$DOLT_VERSION" ] && [ "$DOLT_VERSION" != "null" ]; } \
+      || (echo "ERROR: beads pin missing dolt version" && exit 1) && \
+    [ "$DOLT_ARCH" != "null" ] || (echo "Unsupported arch for dolt: $ARCH" && exit 1) && \
+    { [ -n "$DOLT_SHA256" ] && [ "$DOLT_SHA256" != "null" ]; } \
+      || (echo "ERROR: beads pin missing dolt sha256 for arch $ARCH" && exit 1) && \
+    wget -O /tmp/dolt.tar.gz "$DOLT_URL" && \
+    echo "${DOLT_SHA256}  /tmp/dolt.tar.gz" | sha256sum -c - && \
+    mkdir -p /tmp/dolt-extract && \
+    tar --no-same-owner -xzf /tmp/dolt.tar.gz -C /tmp/dolt-extract && \
+    install -m 0755 /tmp/dolt-extract/dolt-linux-*/bin/dolt /usr/local/bin/dolt && \
+    rm -rf /tmp/dolt.tar.gz /tmp/dolt-extract /tmp/dolt.jsonld /tmp/beads.jsonld
+
+COPY --from=beads-build /out/bd /usr/local/bin/bd
+
+# Fail the build here rather than at a consumer's first `bd` invocation.
+RUN command -v bd && command -v dolt && command -v flock && \
+    bd version && dolt version
+
+USER node
+
+
+# =============================================================================
+# Beads server — the shared task graph itself: a `dolt sql-server` over a data
+# directory that consumers mount as a named volume. This is the multi-writer
+# path; embedded mode (bd's default) is single-writer and cannot back more than
+# one container. Clients reach it by compose DNS, no host port published.
+# =============================================================================
+FROM beads-base AS beads-server
+
+USER root
+COPY .devcontainer/entrypoint-beads.sh /usr/local/bin/
+# Create the data dir in the IMAGE so docker seeds a named volume mounted here
+# with node ownership; a volume over a missing path lands root-owned and the
+# server can't write it.
+RUN chmod +x /usr/local/bin/entrypoint-beads.sh && \
+    mkdir -p /beads && chown node:node /beads
+USER node
+
+ENV BEADS_DATA_DIR=/beads \
+    BEADS_PORT=3307
+EXPOSE 3307
+CMD ["/usr/local/bin/entrypoint-beads.sh"]
+
+
+# =============================================================================
+# Hermes Agent Dependencies — adds the hermes-agent Python venv on top of
+# beads-base (which is kernel-base + the bd/dolt substrate, so hermes agents
+# carry the beads client). Slim extras set (no playwright / no voice / no heavy
+# cloud SDKs); add extras via the pin file's nexus:pipExtras if an agent needs
+# them.
+# =============================================================================
+FROM beads-base AS hermes-deps
 
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -209,3 +333,90 @@ ENV HERMES_HOME=/home/node/.hermes \
     HERMES_WORKSPACE_PATH=/workspace \
     DEFAULT_WORKSPACE_ROOT=/workspace
 # Entrypoint starts as root for state-link bootstrap, then drops to node via gosu.
+
+
+# =============================================================================
+# Gas City builder — THROWAWAY. Compiles the `gc` CLI from the pinned fork. The
+# Go toolchain never reaches a shipped layer; only the binary is COPYed out.
+#
+# The fork publishes no releases or tags, so the pin is a full commit SHA
+# (.devcontainer/gascity/_.jsonld), fetched shallow like the beads pin.
+#
+# CGO_ENABLED=0 `make build` is the fork's own release configuration — its
+# .goreleaser.yml builds every published binary with CGO_ENABLED=0, and the
+# install docs describe the result as "a single static file". The upstream
+# libicu-dev prerequisite applies only to CGO-enabled builds (every ICU block
+# in the fork's Makefile is CGO plumbing), so with CGO off the binary is fully
+# static and neither this stage nor the runtime stage installs ICU — verified
+# with ldd ("not a dynamic executable"). This also means no glibc coupling
+# between builder and runtime, unlike the cgo-built bd.
+# =============================================================================
+FROM golang:1.26-trixie AS gascity-build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    make \
+    jq \
+  && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY .devcontainer/gascity/_.jsonld /tmp/gascity.jsonld
+RUN GASCITY_CLONE_URL=$(jq -r '."nexus:cloneURL"' /tmp/gascity.jsonld) && \
+    GASCITY_REF=$(jq -r '."nexus:pinnedRef"' /tmp/gascity.jsonld) && \
+    { [ -n "$GASCITY_CLONE_URL" ] && [ "$GASCITY_CLONE_URL" != "null" ] && \
+      [ -n "$GASCITY_REF" ] && [ "$GASCITY_REF" != "null" ]; } \
+      || (echo "ERROR: gascity pin missing cloneURL/pinnedRef" && exit 1) && \
+    mkdir -p /out && \
+    git init -q /usr/src/gascity && \
+    cd /usr/src/gascity && \
+    git remote add origin "$GASCITY_CLONE_URL" && \
+    git fetch --depth 1 origin "$GASCITY_REF" && \
+    git checkout -q FETCH_HEAD && \
+    CGO_ENABLED=0 make build && \
+    install -m 0755 /usr/src/gascity/bin/gc /out/gc
+
+
+# =============================================================================
+# Gas City — the bead-native multi-agent orchestrator, running a city against
+# the org's shared beads graph. Builds on beads-base, so bd + dolt + flock
+# arrive from the layer; the claude CLI (an agent runtime provider gc invokes)
+# comes from kernel-base underneath it. No Go toolchain ships here.
+# =============================================================================
+FROM beads-base AS gascity
+
+USER root
+
+# gc's documented runtime prerequisites are tmux, jq, git, dolt, bd, and flock.
+# tmux/jq/git are in kernel-base and dolt/bd/flock in beads-base already, but
+# the full set is named here (plus procps/lsof, which gc's session and process
+# management shells out to) so the contract survives a base-image change.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tmux \
+    jq \
+    procps \
+    lsof \
+  && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY --from=gascity-build /out/gc /usr/local/bin/gc
+COPY .devcontainer/entrypoint-gascity.sh /usr/local/bin/
+
+# Create the city dir in the IMAGE so docker seeds a named volume mounted here
+# with node ownership; a volume over a missing path lands root-owned and gc
+# can't write it.
+RUN chmod +x /usr/local/bin/entrypoint-gascity.sh && \
+    mkdir -p /city && chown node:node /city
+
+USER node
+
+# oh-my-zsh's git plugin (baked into kernel-base's zsh setup) aliases gc to
+# `git commit --verbose`, shadowing the Gas City binary in every interactive
+# shell — upstream's docs call this out and recommend exactly this custom-dir
+# unalias, which oh-my-zsh sources after its plugins load.
+RUN mkdir -p /home/node/.oh-my-zsh/custom && \
+    printf 'unalias gc 2>/dev/null || true\n' > /home/node/.oh-my-zsh/custom/gascity.zsh
+
+# Fail the build here rather than at a consumer's first `gc` invocation.
+RUN command -v gc && command -v tmux && command -v jq && \
+    command -v bd && command -v dolt && command -v flock && \
+    gc version
+
+ENV GC_CITY_DIR=/city
+CMD ["/usr/local/bin/entrypoint-gascity.sh"]
