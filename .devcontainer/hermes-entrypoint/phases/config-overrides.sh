@@ -40,9 +40,12 @@ set_terminal_cwd() {
 
 configure_external_skills() {
   local skills_base="${WORKSPACE_ROOT}/.claude/skills"
+  local kernel_skills_dir="${WORKSPACE_ROOT}/cores/nexus/kernel/skills"
   local hermes_skills="${HERMES_EXTERNAL_SKILLS:-all}"
 
   SKILLS_BASE="$skills_base" \
+    KERNEL_SKILLS_DIR="$kernel_skills_dir" \
+    HERMES_KERNEL_SKILLS="${HERMES_KERNEL_SKILLS:-1}" \
     HERMES_SKILLS_VALUE="$hermes_skills" \
     python3 "$HERMES_CONFIG_OVERRIDES_PY" configure-skills
 }

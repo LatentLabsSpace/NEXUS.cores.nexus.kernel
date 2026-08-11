@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "nexus-kernel",
+  "version": "1.0.0",
+  "description": "The nexus kernel as a self-contained one-plugin marketplace. Consumers register this directory once in .claude/settings.json (extraKnownMarketplaces → directory source pointing at the kernel submodule path) and enable nexus-kernel@nexus-kernel; kernel skills then reach every Claude Code session, and new skills arrive via ordinary submodule pin bumps.",
+  "owner": {
+    "name": "Latent Labs"
+  },
+  "plugins": [
+    {
+      "name": "nexus-kernel",
+      "description": "Kernel-resident skills (/roadmap — beads-native roadmap management).",
+      "source": ".",
+      "category": "agent-infrastructure"
+    }
+  ]
+}

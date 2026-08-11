@@ -109,6 +109,24 @@ def configure_skills() -> None:
                 + ", ".join(missing)
             )
 
+    # Kernel-resident skills (the kernel submodule's plugin-standard skills/
+    # directory). Appended AFTER the workspace dirs so on a name collision the
+    # harness's first-seen-wins rule lets a consumer's workspace skill shadow
+    # the kernel's. Included whenever external skills aren't disabled outright;
+    # HERMES_KERNEL_SKILLS=0 opts out. An absent directory (submodule not
+    # initialized, or a pre-skills kernel pin) warns and skips — never fails
+    # the boot; the next boot after the submodule appears picks it up.
+    kernel_dir = os.environ.get("KERNEL_SKILLS_DIR", "")
+    kernel_enabled = os.environ.get("HERMES_KERNEL_SKILLS", "1") != "0"
+    if hermes_skills != "none" and kernel_enabled and kernel_dir:
+        if os.path.isdir(kernel_dir):
+            dirs.append(kernel_dir)
+        else:
+            print(
+                "Warning: kernel skills dir absent (submodule not initialized, "
+                "or kernel pin predates skills/): " + kernel_dir
+            )
+
     if dirs:
         new_ed = (
             "  external_dirs:\n"

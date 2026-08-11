@@ -316,7 +316,40 @@ wiring.
 | `NEXUS_REPO_URL` | _(empty)_ | Repo to clone into the workspace on first boot |
 | `NEXUS_TARGET_BRANCH` | `dev` | Branch the workspace bootstrap checks out |
 | `HERMES_PROVIDER` / `HERMES_MODEL` | _(unset)_ | Override `model.*` in the seeded config at boot |
-| `HERMES_EXTERNAL_SKILLS` | `all` | Which workspace `.claude/skills` to expose to the agent |
+| `HERMES_EXTERNAL_SKILLS` | `all` | Which workspace `.claude/skills` categories to expose to the agent (`all`, `none`, or a comma list). `none` also disables kernel skills |
+| `HERMES_KERNEL_SKILLS` | `1` | `0` excludes the kernel submodule's `skills/` from `skills.external_dirs` (see [Kernel skills](#kernel-skills)) |
+
+## Kernel skills
+
+The kernel ships agent skills at `skills/<name>/SKILL.md` (plugin-standard
+layout; first resident: `/roadmap`). One source directory reaches **two
+different runtimes** by two different mechanisms — don't conflate them:
+
+1. **Claude Code sessions** (devcontainers, operator CLIs) load them via the
+   plugin system: `.claude-plugin/plugin.json` + `marketplace.json` make the
+   kernel a self-contained one-plugin marketplace. A consumer registers it
+   once in `.claude/settings.json`:
+
+   ```json
+   "extraKnownMarketplaces": {
+     "nexus-kernel": {"source": {"source": "directory", "path": "<abs path to kernel submodule>"}}
+   },
+   "enabledPlugins": {"nexus-kernel@nexus-kernel": true}
+   ```
+
+2. **Hermes gateway agents** (the `hermes` image's Python harness — NOT
+   Claude Code; it never reads plugin manifests) load them because the
+   entrypoint's `configure_external_skills` appends
+   `${WORKSPACE_ROOT}/cores/nexus/kernel/skills` to `skills.external_dirs`
+   in the generated runtime config. Opt out with `HERMES_KERNEL_SKILLS=0`;
+   `HERMES_EXTERNAL_SKILLS=none` disables all external skills including
+   these. An uninitialized submodule warns and skips at boot — it never
+   blocks.
+
+Consequences: skills update in gateway agents via ordinary **submodule pin
+bumps** (workspace checkout path — no image rebuild), and on a skill-name
+collision the workspace's own skills win over the kernel's (first-seen-wins
+in the harness, workspace dirs listed first).
 
 ## Firewall drop-ins
 

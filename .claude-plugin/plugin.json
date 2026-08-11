@@ -1,0 +1,5 @@
+{
+  "name": "nexus-kernel",
+  "version": "0.1.0",
+  "description": "Kernel-resident skills for nexus-kernel consumers — portable agent capabilities that ship with the kernel submodule and update via ordinary pin bumps. First skill: /roadmap (beads-native roadmap management on the org's shared task graph)."
+}
