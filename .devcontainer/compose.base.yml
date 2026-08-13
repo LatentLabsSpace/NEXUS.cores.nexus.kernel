@@ -51,6 +51,13 @@ services:
     environment:
       BEADS_DATA_DIR: ${BEADS_DATA_DIR:-/beads}
       BEADS_PORT: ${BEADS_PORT:-3307}
+      # The dolt server is the stamping authority for any column with
+      # DEFAULT/ON UPDATE CURRENT_TIMESTAMP (beads' issues.updated_at):
+      # server wall-clock lands in naive DATETIME columns. Pin the server
+      # process to UTC so a local-TZ image default can never mint
+      # local-time stamps that read as UTC (context:
+      # https://github.com/LatentLabsSpace/beads/pull/1).
+      TZ: "UTC"
     # Lets a consumer gate its agents on `depends_on: {beads: {condition:
     # service_healthy}}` instead of racing the server's first-boot init.
     healthcheck:
