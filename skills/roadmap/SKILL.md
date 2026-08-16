@@ -138,6 +138,24 @@ in_progress — cross-check `bd list --status in_progress` before declaring
 anything stalled. Rendered views are generated artifacts — mark them as
 such; never hand-edit them and never treat a markdown file as the roadmap.
 
+**Read the recorded content before advising — structure is not state.**
+Every verb above returns graph *shape* (status, assignee, edges, titles).
+The *content* of the work — what a human already decided, posted, or
+finished — lives in the bead's comments and description, and ingest
+pipelines write it there. So when a status answer names a bead as the
+blocker or the next move ("everything funnels through X"), you MUST run
+`bd comments <id> --json` (and `bd show <id> --json`) on that bead and
+build the advice on what is recorded there, e.g. "the layout is recorded
+on hd-b12 as of Aug 14 — what remains is decomposing it into follow-on
+tasks", not "if you've made the decisions already, write them down".
+Two corollaries: (1) hedged advice that would be wrong if the bead's
+comments were read is a bug in your answer, not a safe default; (2) the
+next step comes from the bead's own acceptance criteria and recorded
+notes — never invent a deliverable (a doc, a path, a format) the bead
+does not name. Corollary of the studio no-fabrication rule.
+Cheap way to stay honest: before answering "what's next / what's
+blocking", read the comments of every bead you are about to name.
+
 ## 7. Maintain
 
 - Work lifecycle: `bd update <id> --claim` → notes as you go (`bd note`) →
@@ -172,3 +190,6 @@ container that has no `gc`, say so — routing is not this skill's job.
 7. Wisps/ephemeral beads vanish on GC — never roadmap structure.
 8. A bead in another database/prefix is invisible, not absent — check
    `bd where` before concluding anything is missing.
+9. Report verbs show shape, not content — advising on a bead without
+   reading its comments produces confident, stale guidance (a decision
+   already recorded on the bead gets asked for again).
