@@ -92,6 +92,27 @@ write_hermes_env_files() {
     [ -n "${OPENAI_API_KEY:-}" ] && echo "OPENAI_API_KEY=$OPENAI_API_KEY"
     [ -n "${GEMINI_API_KEY:-}" ] && echo "GEMINI_API_KEY=$GEMINI_API_KEY"
     [ -n "${DEEPSEEK_API_KEY:-}" ] && echo "DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY"
+    [ -n "${FIREWORKS_API_KEY:-}" ] && echo "FIREWORKS_API_KEY=$FIREWORKS_API_KEY"
+    # Any other *_API_KEY exported into the container (a named `providers:`
+    # entry in config.yaml pointing at key_env). Cron jobs resolve secrets ONLY
+    # from this file — cron/scheduler.py runs each job under
+    # build_profile_secret_scope(HERMES_HOME), and get_secret() never falls
+    # through to os.environ inside a scope — so a key present in the container
+    # env but absent here authenticates in `hermes chat` yet 401s from the
+    # scheduler. Explicit lines above stay first; this sweep only adds names
+    # not already emitted.
+    local emitted=" OPENROUTER_API_KEY ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY DEEPSEEK_API_KEY FIREWORKS_API_KEY "
+    local extra_name extra_value
+    for extra_name in $(compgen -A export | grep -E '^[A-Z][A-Z0-9_]*_API_KEY$' | sort); do
+      case "$emitted" in *" $extra_name "*) continue ;; esac
+      extra_value="${!extra_name:-}"
+      [ -n "$extra_value" ] || continue
+      if [[ "$extra_value" == *$'\n'* || "$extra_value" == *$'\r'* ]]; then
+        echo "WARN: Skipping $extra_name because it contains a newline" >&2
+        continue
+      fi
+      printf '%s=%s\n' "$extra_name" "$extra_value"
+    done
     [ -n "${SENTRY_DSN:-}" ] && echo "SENTRY_DSN=$SENTRY_DSN"
 
     [ -n "${DISCORD_BOT_TOKEN:-}" ] && echo "DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN"
