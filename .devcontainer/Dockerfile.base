@@ -305,6 +305,34 @@ RUN HERMES_CLONE_URL=$(jq -r '."nexus:cloneURL"' /tmp/hermes-agent.jsonld) && \
 ENV PATH="/home/node/.local/bin:${PATH}" \
     PYTHONPATH="/home/node/hermes-agent"
 
+# Pre-build hermes-agent's Node frontends at image build time: the dashboard web
+# UI (web/ -> hermes_cli/web_dist) and the TUI bundle (ui-tui/dist/entry.js,
+# which the dashboard's PTY chat sessions launch). Without this, the first
+# `hermes dashboard` inside a container runs `npm ci` + `tsc -b && vite build`
+# at runtime — a multi-GB memory spike that OOM-killed the gateway on an 8 GiB
+# host. The install closure mirrors hermes-agent's own runtime choice
+# (_web_npm_install_context: ui-tui + web + workspace root, from the single root
+# lockfile), so the TUI's lockfile-vs-node_modules check passes as installed.
+# npm_config_install_links=false keeps `file:` workspace deps as symlinks — the
+# same guard upstream's Dockerfile sets, since copies desync npm's hidden lock
+# and trigger a runtime reinstall on every TUI launch.
+ENV npm_config_install_links=false
+RUN cd /home/node/hermes-agent && \
+    CI=1 npm ci --workspace ui-tui --workspace web --include-workspace-root \
+      --include=dev --no-audit --no-fund --fetch-retries=5 && \
+    npm run build -w web && \
+    npm run build -w ui-tui && \
+    test -f hermes_cli/web_dist/index.html && \
+    test -f ui-tui/dist/entry.js && \
+    npm cache clean --force
+
+# The web build's freshness stamp lives under $HERMES_HOME, which consumers
+# mount from a volume — so the prebuilt dist would still look stale at runtime
+# and `hermes dashboard` would rebuild anyway. Pointing HERMES_WEB_DIST at the
+# prebuilt dist makes the dashboard validate it (index.html) and skip the build
+# path entirely. Bumping the hermes-agent pin re-runs the layer above.
+ENV HERMES_WEB_DIST=/home/node/hermes-agent/hermes_cli/web_dist
+
 
 # =============================================================================
 # Hermes Agent — thin config layer on top of hermes-deps.

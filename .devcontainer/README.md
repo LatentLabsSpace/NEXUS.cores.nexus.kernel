@@ -51,6 +51,15 @@ pattern the nexus root uses for the jj and flyctl binaries. To bump the harness,
 edit `nexus:pinnedRef` (and `nexus:pipExtras` if the installed extras change) and
 rebuild the `hermes-deps` stage.
 
+The same stage also **pre-builds hermes-agent's Node frontends** — the dashboard
+web UI (`hermes_cli/web_dist`) and the TUI bundle (`ui-tui/dist/entry.js`) — and
+sets `HERMES_WEB_DIST` to the prebuilt dist. `hermes dashboard` therefore never
+runs `npm ci` / `vite build` inside a running container (that runtime build is a
+multi-GB memory spike; it OOM-killed a gateway on an 8 GiB host). The env var is
+load-bearing: the web build's freshness stamp lives under `$HERMES_HOME`, which
+consumers mount from a volume, so without it the prebuilt dist reads as stale and
+the dashboard rebuilds anyway. A pin bump re-runs the prebuild automatically.
+
 ## Beads substrate
 
 [Beads](https://github.com/LatentLabsSpace/beads) is the kernel's shared task
