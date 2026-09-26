@@ -19,7 +19,7 @@ fi
 
 # --- Firewall ---
 echo "Initializing firewall..."
-sudo -E /usr/local/bin/init-firewall.sh
+sudo /usr/local/bin/init-firewall.sh
 
 # --- Post-boot hook ---
 if [ -n "${NEXUS_POST_BOOT_CMD:-}" ]; then

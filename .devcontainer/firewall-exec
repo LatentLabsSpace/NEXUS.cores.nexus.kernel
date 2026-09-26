@@ -1,0 +1,17 @@
+#!/bin/bash
+# firewall-exec — run the kernel egress firewall, then exec the service.
+#
+# For any service image built on a kernel image that runs as `node` and wants the
+# same egress policy as the agent containers. Use it as an ENTRYPOINT prefix:
+#
+#   ENTRYPOINT ["/usr/local/bin/firewall-exec", "/usr/local/bin/my-entrypoint.sh"]
+#
+# and give the service `cap_add: [NET_ADMIN, NET_RAW]` plus FIREWALL_MODULES /
+# FIREWALL_KERNEL_MODULES in compose. Plain `sudo` (no -E): the sudoers rule
+# passes only the FIREWALL_* selection variables through, via env_keep.
+# FIREWALL_ENABLED=false skips it (debug only).
+set -euo pipefail
+if [ "${FIREWALL_ENABLED:-true}" = "true" ]; then
+    sudo /usr/local/bin/init-firewall.sh
+fi
+exec "$@"

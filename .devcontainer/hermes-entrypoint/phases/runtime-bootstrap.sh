@@ -6,8 +6,9 @@
 initialize_firewall() {
   if [ "${FIREWALL_ENABLED:-true}" = "true" ]; then
     echo "Initializing firewall..."
-    sudo --preserve-env=FIREWALL_MODULES,GH_TOKEN,HOST_GH_TOKEN \
-      /usr/local/bin/init-firewall.sh
+    # Plain sudo: the sudoers rule's env_keep passes the FIREWALL_* selection
+    # variables; nothing else (tokens included) reaches the root process.
+    sudo /usr/local/bin/init-firewall.sh
   fi
 }
 

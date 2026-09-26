@@ -2,6 +2,17 @@
 set -euo pipefail  # Exit on error, undefined vars, and pipeline failures
 IFS=$'\n\t'       # Stricter word splitting
 
+# One-shot per container start. The rules and ipsets live in this container's
+# network namespace, which a restart recreates, so every boot starts clean. Once
+# a boot has COMPLETED (marker ipset below, created last), any later invocation
+# is a no-op: a devcontainer postStartCommand, or an agent re-running this via
+# the node sudo rule with its own module choices, can never widen egress after
+# boot. A run that failed part-way leaves no marker, so it can be retried.
+if ipset list -n kernel-firewall-done >/dev/null 2>&1; then
+    echo "Firewall already initialized for this container start; not re-applying."
+    exit 0
+fi
+
 # 1. Extract Docker DNS info BEFORE any flushing
 DOCKER_DNS_RULES=$(iptables-save -t nat | grep "127\.0\.0\.11" || true)
 
@@ -46,85 +57,140 @@ iptables -A OUTPUT -o lo -j ACCEPT
 # Create ipset with CIDR support
 ipset create allowed-domains hash:net
 
-# Fetch GitHub meta information and aggregate + add their IP ranges
-echo "Fetching GitHub IP ranges..."
-gh_ranges=""
-for attempt in 1 2 3 4 5; do
-    gh_ranges=$(curl -s --connect-timeout 5 --retry 0 https://api.github.com/meta)
-    [ -n "$gh_ranges" ] && break
-    echo "Attempt $attempt failed, retrying in 3s..."
-    sleep 3
-done
-if [ -z "$gh_ranges" ]; then
-    echo "ERROR: Failed to fetch GitHub IP ranges after 5 attempts"
-    exit 1
-fi
-
-if ! echo "$gh_ranges" | jq -e '.web and .api and .git' >/dev/null; then
-    echo "ERROR: GitHub API response missing required fields"
-    exit 1
-fi
-
-echo "Processing GitHub IPs..."
-while read -r cidr; do
-    if [[ ! "$cidr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; then
-        echo "ERROR: Invalid CIDR range from GitHub meta: $cidr"
-        exit 1
-    fi
-    echo "Adding GitHub range $cidr"
-    ipset add -exist allowed-domains "$cidr"
-done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q)
-
-# GitHub LFS uses S3 (github-cloud.s3.amazonaws.com) which rotates IPs
-# across many AWS /16 blocks. DNS-based resolution is insufficient because
-# S3 returns different IPs on every request. We hardcode the /16 supernets
-# that cover known GitHub LFS storage IPs.
-#
-# Security tradeoff: this opens ~327k IPs across 5 AWS S3 /16 blocks,
-# making any S3 endpoint in those ranges reachable on port 443. However:
-#   - Write access to S3 requires AWS credentials (the agent has none)
-#   - Read access to public buckets is low-severity vs the GitHub API
-#     access already allowed
-#   - This is required for agents to push LFS-tracked files (images, etc.)
-# If this surface is no longer acceptable, set GIT_LFS_SKIP_PUSH=1 and
-# push LFS objects from a machine outside the firewall.
-echo "Adding S3 ranges for GitHub LFS..."
-for cidr in 3.5.0.0/16 16.15.0.0/16 52.216.0.0/16 52.217.0.0/16 54.231.0.0/16; do
-    ipset add -exist allowed-domains "$cidr"
-done
-echo "Added S3 supernets for LFS"
-
 DROPIN_DIR="$(dirname "$0")/firewall.d"
 
-# Load universal kernel domains. Both directories are always loaded,
-# regardless of FIREWALL_MODULES — they differ only in failure semantics:
+# Load universal kernel domains. Both tiers are selected per module by
+# FIREWALL_KERNEL_MODULES (default: all); the tiers differ only in what a DNS
+# miss does to a SELECTED module:
 #
-#   _required/  hard-fail: a DNS miss aborts the boot. Reserve this for
-#               domains without which the container is genuinely unusable.
+#   _required/  hard-fail: a DNS miss aborts the boot (github, npm).
 #   _optional/  warn-and-skip: a DNS miss logs a warning and continues.
-#               Everything else — telemetry, marketplaces, package indexes.
+#
+#   FIREWALL_KERNEL_MODULES:
+#     all           every kernel module, both tiers (the default)
+#     none          no kernel modules
+#     a,b           allowlist: only these modules
+#     all,-a,-b     every module except these (`-a` alone implies all)
+#   Module names are the .conf basenames ([a-z0-9-]); invalid or unknown names
+#   warn and are ignored. Deselecting `github` also skips the GitHub meta IP
+#   ranges and the LFS S3 supernets, which exist only for GitHub.
 #
 # Keep _required/ minimal. A domain listed there is a boot-blocker for every
 # downstream consumer the day its DNS changes; statsig.anthropic.com went
 # NXDOMAIN in July 2026 and bricked consumer boots for exactly that reason.
 REQUIRED_DOMAINS=()
 OPTIONAL_DOMAINS=()
+# Membership/joins done explicitly: this script runs with IFS=$'\n\t', so
+# "${arr[*]}" joins with newlines and string-match membership tests break.
+_contains() { local _n="$1" _x; shift; for _x in "$@"; do [ "$_x" = "$_n" ] && return 0; done; return 1; }
+_join() { local IFS=' '; echo "$*"; }
+_kernel_sel="${FIREWALL_KERNEL_MODULES:-all}"
+_kernel_sel="${_kernel_sel// /}"
+_kmode=""; _kinclude=(); _kexclude=()
+IFS=',' read -ra _ktokens <<< "$_kernel_sel"
+_valid_module() { [[ "$1" =~ ^[a-z0-9][a-z0-9-]*$ ]]; }
+for _t in "${_ktokens[@]}"; do
+    case "$_t" in
+        "")   ;;
+        all)  [ "$_kmode" = none ] || _kmode=all ;;
+        none) _kmode=none ;;
+        -*)   if _valid_module "${_t#-}"; then _kexclude+=("${_t#-}"); else echo "WARN: FIREWALL_KERNEL_MODULES: invalid module name '${_t#-}' ignored"; fi ;;
+        *)    if _valid_module "$_t"; then _kinclude+=("$_t"); else echo "WARN: FIREWALL_KERNEL_MODULES: invalid module name '$_t' ignored"; fi ;;
+    esac
+done
+if [ "$_kmode" = none ] && { [ ${#_kinclude[@]} -gt 0 ] || [ ${#_kexclude[@]} -gt 0 ]; }; then
+    echo "WARN: FIREWALL_KERNEL_MODULES='$_kernel_sel' mixes 'none' with module names; honoring 'none'"
+fi
+if [ -z "$_kmode" ]; then
+    # Bare exclusions ("-vscode") mean "all minus these"; bare names are an allowlist.
+    if [ ${#_kinclude[@]} -eq 0 ]; then _kmode=all; else _kmode=list; fi
+elif [ "$_kmode" = all ] && [ ${#_kinclude[@]} -gt 0 ]; then
+    echo "WARN: FIREWALL_KERNEL_MODULES='$_kernel_sel': names next to 'all' are redundant; loading all"
+fi
+if [ "$_kmode" = list ] && [ ${#_kexclude[@]} -gt 0 ]; then
+    echo "WARN: FIREWALL_KERNEL_MODULES='$_kernel_sel': exclusions have no effect on an allowlist"
+fi
+_kavailable=(); _krequired=()
 for _conf in "$DROPIN_DIR/_required"/*.conf; do
-    [ -f "$_conf" ] || continue
-    while IFS= read -r _line || [ -n "$_line" ]; do
-        _line="${_line%%#*}"; _line="${_line// /}"
-        [ -z "$_line" ] && continue
-        REQUIRED_DOMAINS+=("$_line")
-    done < "$_conf"
+    [ -f "$_conf" ] && _kavailable+=("$(basename "$_conf" .conf)") && _krequired+=("$(basename "$_conf" .conf)")
 done
 for _conf in "$DROPIN_DIR/_optional"/*.conf; do
-    [ -f "$_conf" ] || continue
+    [ -f "$_conf" ] && _kavailable+=("$(basename "$_conf" .conf)")
+done
+for _name in "${_kinclude[@]}" "${_kexclude[@]}"; do
+    _contains "$_name" "${_kavailable[@]}" || \
+        echo "WARN: FIREWALL_KERNEL_MODULES names unknown kernel module '$_name' (available: $(_join "${_kavailable[@]}"))"
+done
+_kloaded=(); _kskipped=()
+for _name in "${_kavailable[@]}"; do
+    _want=false
+    case "$_kmode" in
+        all)  _want=true ;;
+        list) _contains "$_name" "${_kinclude[@]}" && _want=true ;;
+    esac
+    _contains "$_name" "${_kexclude[@]}" && _want=false
+    if ! $_want; then _kskipped+=("$_name"); continue; fi
+    _kloaded+=("$_name")
+    if _contains "$_name" "${_krequired[@]}"; then _tier=_required; else _tier=_optional; fi
     while IFS= read -r _line || [ -n "$_line" ]; do
         _line="${_line%%#*}"; _line="${_line// /}"
         [ -z "$_line" ] && continue
-        OPTIONAL_DOMAINS+=("$_line")
-    done < "$_conf"
+        if [ "$_tier" = _required ]; then REQUIRED_DOMAINS+=("$_line"); else OPTIONAL_DOMAINS+=("$_line"); fi
+    done < "$DROPIN_DIR/$_tier/$_name.conf"
 done
+echo "Kernel modules (FIREWALL_KERNEL_MODULES=$_kernel_sel): loaded [$(_join "${_kloaded[@]}")] skipped [$(_join "${_kskipped[@]}")] (required tier: $(_join "${_krequired[@]}"))"
+
+if _contains github "${_kloaded[@]}"; then
+    # Fetch GitHub meta information and aggregate + add their IP ranges
+    echo "Fetching GitHub IP ranges..."
+    gh_ranges=""
+    for attempt in 1 2 3 4 5; do
+        gh_ranges=$(curl -s --connect-timeout 5 --retry 0 https://api.github.com/meta)
+        [ -n "$gh_ranges" ] && break
+        echo "Attempt $attempt failed, retrying in 3s..."
+        sleep 3
+    done
+    if [ -z "$gh_ranges" ]; then
+        echo "ERROR: Failed to fetch GitHub IP ranges after 5 attempts"
+        exit 1
+    fi
+
+    if ! echo "$gh_ranges" | jq -e '.web and .api and .git' >/dev/null; then
+        echo "ERROR: GitHub API response missing required fields"
+        exit 1
+    fi
+
+    echo "Processing GitHub IPs..."
+    while read -r cidr; do
+        if [[ ! "$cidr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; then
+            echo "ERROR: Invalid CIDR range from GitHub meta: $cidr"
+            exit 1
+        fi
+        echo "Adding GitHub range $cidr"
+        ipset add -exist allowed-domains "$cidr"
+    done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q)
+
+    # GitHub LFS uses S3 (github-cloud.s3.amazonaws.com) which rotates IPs
+    # across many AWS /16 blocks. DNS-based resolution is insufficient because
+    # S3 returns different IPs on every request. We hardcode the /16 supernets
+    # that cover known GitHub LFS storage IPs.
+    #
+    # Security tradeoff: this opens ~327k IPs across 5 AWS S3 /16 blocks,
+    # making any S3 endpoint in those ranges reachable on port 443. However:
+    #   - Write access to S3 requires AWS credentials (the agent has none)
+    #   - Read access to public buckets is low-severity vs the GitHub API
+    #     access already allowed
+    #   - This is required for agents to push LFS-tracked files (images, etc.)
+    # If this surface is no longer acceptable, set GIT_LFS_SKIP_PUSH=1 and
+    # push LFS objects from a machine outside the firewall.
+    echo "Adding S3 ranges for GitHub LFS..."
+    for cidr in 3.5.0.0/16 16.15.0.0/16 52.216.0.0/16 52.217.0.0/16 54.231.0.0/16; do
+        ipset add -exist allowed-domains "$cidr"
+    done
+    echo "Added S3 supernets for LFS"
+else
+    echo "github module not selected: skipping GitHub meta IP ranges and LFS S3 supernets"
+fi
 
 # Load project-specific domains from drop-in directory.
 # If FIREWALL_MODULES is set, only load the named modules (comma-separated,
@@ -137,9 +203,18 @@ if [ -d "$DROPIN_DIR" ]; then
         IFS=',' read -ra _fw_modules <<< "$FIREWALL_MODULES"
         for mod in "${_fw_modules[@]}"; do
             mod="${mod// /}"  # strip whitespace
+            [ -z "$mod" ] && continue
+            if ! [[ "$mod" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+                echo "WARN: FIREWALL_MODULES: invalid module name '${mod}' ignored"
+                continue
+            fi
             conf="$DROPIN_DIR/${mod}.conf"
             if [ ! -f "$conf" ]; then
-                echo "WARN: Requested firewall module '${mod}' not found at $conf, skipping"
+                if [ -f "$DROPIN_DIR/_optional/${mod}.conf" ]; then
+                    echo "WARN: '${mod}' is a kernel module (firewall.d/_optional/${mod}.conf); it is selected by FIREWALL_KERNEL_MODULES, not FIREWALL_MODULES — ignoring it here"
+                else
+                    echo "WARN: Requested firewall module '${mod}' not found at $conf, skipping"
+                fi
                 continue
             fi
             while IFS= read -r line || [ -n "$line" ]; do
@@ -288,9 +363,16 @@ else
 fi
 
 # Verify GitHub API access
-if ! curl --connect-timeout 5 https://api.github.com/zen >/dev/null 2>&1; then
+if ! _contains github "${_kloaded[@]}"; then
+    echo "Firewall verification: github module not selected, skipping the GitHub reachability check"
+elif ! curl --connect-timeout 5 https://api.github.com/zen >/dev/null 2>&1; then
     echo "ERROR: Firewall verification failed - unable to reach https://api.github.com"
     exit 1
 else
     echo "Firewall verification passed - able to reach https://api.github.com as expected"
 fi
+
+# Completion marker — see the one-shot guard at the top. Created only after the
+# DROP policies are in place and verification passed.
+ipset create kernel-firewall-done hash:ip
+echo "Firewall configuration locked for this container start"

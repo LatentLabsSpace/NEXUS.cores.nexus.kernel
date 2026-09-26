@@ -71,6 +71,21 @@ case "$MODE" in
     ;;
 esac
 
+# Optional web dashboard alongside the main process. Off unless the consumer
+# opts in (Dockerfile.base defaults HERMES_DASHBOARD_AUTOSTART=false). Tracked in
+# background_pids so cleanup stops it with the container, but deliberately NOT
+# waited on: a dashboard crash never takes the gateway (or the container) down.
+# Binds the dashboard's own default, 127.0.0.1:9119 — loopback only; reach it via
+# a port forward or tunnel. Launching it here (not from an IDE terminal) also
+# gives it the container's PATH rather than an editor-injected one.
+case "${HERMES_DASHBOARD_AUTOSTART:-false}" in
+  true|1|yes|on)
+    echo "Starting Hermes dashboard (127.0.0.1:9119)..."
+    hermes dashboard --no-open &
+    background_pids+=("$!")
+    ;;
+esac
+
 wait "$runtime_pid"
 exit_code=$?
 

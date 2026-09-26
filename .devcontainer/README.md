@@ -10,14 +10,16 @@ zsh + Claude Code environment with a configurable firewall, plus an optional
 
 | Target | Builds on | Contains |
 |---|---|---|
-| `kernel-base` | `node:22-trixie` | Generic dev environment — mise (Node 22, Python 3.12, uv), git-delta, zsh, Claude Code, the firewall script + universal `_required/` and `_optional/` allowlists. No project-specific COPYs. Trixie is required: it ships git >= 2.41, which jj's git backend needs. |
+| `kernel-core` | `node:22-trixie` | Agent-CLI-free root — mise (Node 22, Python 3.12, uv), git-delta, zsh, the firewall script + universal `_required/` and `_optional/` allowlists. No project-specific COPYs. Trixie is required: it ships git >= 2.41, which jj's git backend needs. Infrastructure images that run no agent (`beads-server`) build here. |
+| `kernel-base` | `kernel-core` | `kernel-core` + the agent CLIs: Claude Code and the Codex CLI (`@openai/codex`, pinned via `CODEX_VERSION`, ~374 MB). The generic dev environment; the nexus root's orchestrator/tools images and every agent image build on it. |
 | `beads-build` | `golang:1.26-trixie` | **Throwaway.** Compiles the `bd` CLI from the pinned beads fork. Nothing from this stage ships except the binary. |
-| `beads-base` | `kernel-base` | `kernel-base` + the beads substrate: the `bd` CLI, the `dolt` engine, and `flock`. Every agent image re-parents onto this, so agent containers carry the task-graph client by construction. |
-| `beads-server` | `beads-base` | The shared task graph itself — `entrypoint-beads.sh` running `dolt sql-server` over `$BEADS_DATA_DIR`. |
+| `beads-core` | `kernel-core` | `kernel-core` + the beads substrate: the `bd` CLI, the `dolt` engine, and `flock`. Built once; no agent CLIs. |
+| `beads-server` | `beads-core` | The shared task graph itself — `entrypoint-beads.sh` running `dolt sql-server` over `$BEADS_DATA_DIR`. Carries no Claude/Codex. |
+| `beads-base` | `kernel-base` | `kernel-base` + `bd`/`dolt` copied from `beads-core` (+ `flock`). Every agent image re-parents onto this, so agent containers carry the task-graph client and both agent CLIs by construction. |
 | `hermes-deps` | `beads-base` | `beads-base` + build toolchain (gosu, build-essential, python3-dev, libffi-dev, ripgrep) + the hermes-agent Python venv. |
 | `hermes` | `hermes-deps` | Thin config layer — `entrypoint-hermes.sh`, the `hermes-entrypoint/` phase scripts, and default `config.yaml` / `SOUL.md` templates. Starts as root, drops to `node` via gosu. |
 | `gascity-build` | `golang:1.26-trixie` | **Throwaway.** Compiles the `gc` CLI from the pinned gascity fork. Nothing from this stage ships except the binary. |
-| `gascity` | `beads-base` | Gas City — the bead-native multi-agent orchestrator. `gc` + `entrypoint-gascity.sh` running a city against the shared beads server; bd/dolt/flock arrive from `beads-base`, tmux/jq/claude from `kernel-base`. |
+| `gascity` | `beads-base` | Gas City — the bead-native multi-agent orchestrator. `gc` + `entrypoint-gascity.sh` running a city against the shared beads server; bd/dolt/flock arrive from `beads-base`, claude/codex from `kernel-base`, tmux/jq from this stage. |
 
 `compose.base.yml` exposes four services, all consumed via `extends:`:
 `nexus-kernel-base` (target `kernel-base`), `beads` (target `beads-server`),
@@ -83,7 +85,7 @@ graph is a compose service, not a directory.
 
 Dolt's floor is **>= 2.1.0** — the beads fork's docs flag that pre-1.86.2 builds
 miss a GC/writer deadlock fix (dolthub/dolt `ccf7bde206`). To bump either, edit
-the pin file and rebuild `beads-base`. A dolt bump means updating **both** the
+the pin file and rebuild `beads-core` (`beads-server` and `beads-base` both pick up the new binaries). A dolt bump means updating **both** the
 version and the `nexus:sha256` digests, or the build fails at `sha256sum -c`.
 
 `bd` builds with `make build`, which is `CGO_ENABLED=1 -tags=gms_pure_go`. CGO is
@@ -195,7 +197,7 @@ volume, the city dies with the container otherwise.
 |---|---|---|
 | `GC_CITY_DIR` | `/city` | City directory — mount the named volume here |
 | `GC_TEMPLATE` | `gascity` | `gc init --template` value |
-| `GC_DEFAULT_PROVIDER` | `claude` | Agent runtime provider (the claude CLI ships in `kernel-base`) |
+| `GC_DEFAULT_PROVIDER` | `claude` | Agent runtime provider. Both the `claude` and `codex` CLIs ship in `kernel-base`, and gc supports either (`codex` reads `~/.codex/auth.json`) |
 | `GC_RIG_NAME` | workspace basename | Rig name for the workspace |
 | `GC_DOLT_DATABASE` | `beads` | The city's beads database on the shared server |
 | `GC_BEADS_PROJECT_ID` | `city` | Beads project id (gc can't derive one from a non-`bd_`-prefixed database name) |
@@ -301,7 +303,8 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 | `NEXUS_BRANCH` | `dev` | Branch to checkout |
 | `NEXUS_WORKSPACE` | `/workspace` | Target directory for clone / cd |
 | `NEXUS_POST_BOOT_CMD` | _(empty)_ | Command to exec after firewall init |
-| `FIREWALL_MODULES` | `all` | Comma-separated conf names to load, `all`, or `none` |
+| `FIREWALL_MODULES` | `all` | The consumer's own top-level `firewall.d/*.conf` drop-ins: comma-separated names, `all`, or `none` |
+| `FIREWALL_KERNEL_MODULES` | `all` | Which kernel modules load, from **both** tiers: `all`, `none`, an allowlist (`github,npm,openai`), or all-minus (`all,-vscode,-anthropic-telemetry`). See [Firewall drop-ins](#firewall-drop-ins) |
 | `FIREWALL_ALLOW_LOCAL_NETWORKS` | `1` | `0` drops the container's own compose networks from the allowlist (breaks reaching sibling services) |
 
 ### `beads` service (`entrypoint-beads.sh`)
@@ -325,8 +328,22 @@ wiring.
 | `NEXUS_REPO_URL` | _(empty)_ | Repo to clone into the workspace on first boot |
 | `NEXUS_TARGET_BRANCH` | `dev` | Branch the workspace bootstrap checks out |
 | `HERMES_PROVIDER` / `HERMES_MODEL` | _(unset)_ | Override `model.*` in the seeded config at boot |
+| `HERMES_DASHBOARD_AUTOSTART` | `false` | `true` also starts `hermes dashboard` (127.0.0.1:9119, loopback) alongside the main process. Not waited on, so a dashboard crash never stops the container — and nothing restarts it either: restart the container to bring it back. See the trust note below |
 | `HERMES_EXTERNAL_SKILLS` | `all` | Which workspace `.claude/skills` categories to expose to the agent (`all`, `none`, or a comma list). `none` also disables kernel skills |
 | `HERMES_KERNEL_SKILLS` | `1` | `0` excludes the kernel submodule's `skills/` from `skills.external_dirs` (see [Kernel skills](#kernel-skills)) |
+
+**Dashboard trust boundary.** "Loopback" is a *network* boundary, not a trust
+boundary: every process inside the container — the agent's own tool subprocesses and
+anything an attached IDE runs in there — can reach `127.0.0.1:9119`. On a loopback
+bind the dashboard's auth gate does not engage; its session token is served in the
+SPA, so any client that can `GET /` can drive it, including `POST /api/env/reveal`
+(rate-limited, audit-logged). This adds no capability the same processes lack:
+hermes-agent's own file guards are documented as "defense-in-depth, NOT a security
+boundary: the terminal tool runs as the same OS user and can read/write anything"
+(`agent/file_safety.py`), and the profile secrets file is `node`-owned mode 600 —
+the same user the agent's terminal runs as. If you ever need the secrets file out of
+the agent's reach, that takes a different OS user or a separate container, and the
+dashboard would then need an auth provider configured before enabling autostart.
 
 ## Kernel skills
 
@@ -366,23 +383,77 @@ Three tiers, resolved at boot by `init-firewall.sh`:
 
 | Tier | Loaded | On DNS failure |
 |---|---|---|
-| `firewall.d/_required/` | always, ignores `FIREWALL_MODULES` | **abort the boot** |
-| `firewall.d/_optional/` | always, ignores `FIREWALL_MODULES` | warn and skip |
+| `firewall.d/_required/` (`github`, `npm`) | per `FIREWALL_KERNEL_MODULES` (default `all`) | **abort the boot** |
+| `firewall.d/_optional/` | per `FIREWALL_KERNEL_MODULES` (default `all`) | warn and skip |
 | `firewall.d/*.conf` (consumer's own) | per `FIREWALL_MODULES` | warn and skip |
 
-`_required/` is deliberately tiny — npm, the Anthropic API, and GitHub. Anything
+`_required/` is deliberately tiny — npm and GitHub. Anything
 there is a boot-blocker for every downstream consumer on the day its DNS
 changes, which is not hypothetical: `statsig.anthropic.com` went NXDOMAIN in
 July 2026 while sitting in `_required/anthropic.conf` and bricked consumer
 boots until it was removed. **Default new kernel domains to `_optional/`**; only
 promote to `_required/` when the container is genuinely unusable without them.
+The Anthropic API itself moved to `_optional/anthropic.conf` in September 2026 for
+the same reason, and so consumers that don't use Anthropic can drop it.
 
-`_optional/` carries telemetry (sentry, statsig), the VS Code marketplace, and
-mise/PyPI — all things whose absence degrades a workflow but not the boot.
+`_optional/` carries the Anthropic API, OpenAI (Codex CLI), Fireworks, Linear,
+telemetry (sentry, statsig), the VS Code marketplace, and mise/PyPI — all things
+whose absence degrades a workflow but not the boot. A consumer picks among them
+with `FIREWALL_KERNEL_MODULES` using module names (the `.conf` basenames). The same
+variable selects `_required/` modules too: "required" only means a DNS miss aborts
+the boot *when the module is selected*. Deselecting `github` also skips GitHub's
+published meta IP ranges and the Git LFS S3 supernets, which exist only for it:
+
+| Value | Loads |
+|---|---|
+| `all` (default) | every `_optional/` module |
+| `none` | no `_optional/` modules |
+| `github,npm,openai` | only the listed modules (least privilege; new kernel modules are NOT picked up automatically) |
+| `all,-vscode,-anthropic-telemetry` | everything except the listed modules (a bare `-vscode` also implies `all`; new kernel modules ARE picked up) |
+
+Unknown names warn rather than abort. The boot log prints the resolved
+`loaded [...] skipped [...]` set. Naming a kernel module in `FIREWALL_MODULES`
+(which only selects the consumer's own top-level drop-ins) logs a warning that
+points at `FIREWALL_KERNEL_MODULES`.
 
 Downstream projects add project-specific `.conf` files in their own
 `firewall.d/`, which land alongside these in the image and are already
 warn-and-skip. A consumer never needs to shadow a kernel conf to soften it.
+
+### Hardening: who can change the firewall
+
+- **node can run `init-firewall.sh` as root, but cannot set its environment.** The
+  sudoers rule has no `SETENV`. With `SETENV`, caller-supplied variables skip sudo's
+  scrubbing, and `BASH_ENV` ran arbitrary code as root inside the (bash) script.
+  Only `FIREWALL_MODULES`, `FIREWALL_KERNEL_MODULES` and
+  `FIREWALL_ALLOW_LOCAL_NETWORKS` pass through, via `env_keep`. Call it with plain
+  `sudo`: `sudo -E` / `--preserve-env` are rejected without `SETENV`.
+- **One-shot per container start.** Once a boot completes, the script creates a
+  marker ipset (`kernel-firewall-done`), and every later run is a no-op. A
+  devcontainer `postStartCommand`, or an agent re-running it with its own module
+  choices, cannot widen egress after boot. Rules live in the container's network
+  namespace, so a restart starts clean; refreshing rotating CDN IPs therefore means
+  restarting the container.
+- **Module names are validated** (`[a-z0-9-]`), so a name can't traverse to a file
+  the caller wrote.
+- **Allowed domains are still exfiltration channels** with an attacker's own
+  credentials (push to their repo, `npm publish`, their model-API account). Domain
+  allowlists can't close that; see hd-3bw (egress proxy / repo-org allowlists).
+
+### Firewalling a service image: `firewall-exec`
+
+A service built on a kernel image (running as `node`) opts into the same policy
+with an `ENTRYPOINT` prefix, plus `cap_add: [NET_ADMIN, NET_RAW]` and its
+`FIREWALL_MODULES` / `FIREWALL_KERNEL_MODULES` in compose:
+
+```dockerfile
+ENTRYPOINT ["/usr/local/bin/firewall-exec", "/usr/local/bin/my-entrypoint.sh"]
+```
+
+It runs the firewall (skipped when `FIREWALL_ENABLED=false`), then `exec`s the
+service. A service with no internet needs can set `FIREWALL_KERNEL_MODULES=none`
+and `FIREWALL_MODULES=none`. Compose peers (the container's own networks) and the
+host's /24 stay reachable.
 
 ### Compose-network peers
 

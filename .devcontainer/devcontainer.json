@@ -28,6 +28,6 @@
     }
   },
   "postCreateCommand": "git config --global include.path /workspace/.devcontainer/gitconfig.base",
-  "postStartCommand": "sudo -E /usr/local/bin/init-firewall.sh",
+  "postStartCommand": "sudo /usr/local/bin/init-firewall.sh",
   "waitFor": "postStartCommand"
 }

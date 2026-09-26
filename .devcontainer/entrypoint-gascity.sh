@@ -28,7 +28,7 @@ fi
 
 # --- Firewall ---
 echo "Initializing firewall..."
-sudo -E /usr/local/bin/init-firewall.sh
+sudo /usr/local/bin/init-firewall.sh
 
 # --- City init ---
 # Server endpoint: the kernel's documented beads client contract

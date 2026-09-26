@@ -4,12 +4,15 @@
 # on older versions, so `jj git fetch` / `jj git push` fail for every consumer.
 # node:20 is bookworm-based (git 2.39.5) and broke exactly this — keep the
 # trixie tag, which matches what the nexus root ran before the kernel cutover.
-FROM node:22-trixie AS kernel-base
+#
+# kernel-core is the agent-CLI-free root: shell, dev tooling, mise, firewall.
+# Infrastructure images that run no agent (beads-server) build on it directly;
+# kernel-base (below) adds the agent CLIs for everything else.
+FROM node:22-trixie AS kernel-core
 
 ARG TZ
 ENV TZ="$TZ"
 
-ARG CLAUDE_CODE_VERSION=latest
 
 # Install basic development tools and iptables/ipset
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -111,19 +114,45 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
   -a 'eval "$(mise activate zsh)"' \
   -x
 
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
-
 # Copy firewall script and universal allowlists. Both _required/ (hard-fail on
 # DNS miss) and _optional/ (warn-and-skip) are always loaded at boot.
 COPY .devcontainer/init-firewall.sh /usr/local/bin/
+COPY .devcontainer/firewall-exec /usr/local/bin/
 COPY .devcontainer/firewall.d/_required/ /usr/local/bin/firewall.d/_required/
 COPY .devcontainer/firewall.d/_optional/ /usr/local/bin/firewall.d/_optional/
 
 USER root
-RUN chmod +x /usr/local/bin/init-firewall.sh && \
-  echo "node ALL=(root) NOPASSWD: SETENV: /usr/local/bin/init-firewall.sh" > /etc/sudoers.d/node-firewall && \
-  chmod 0440 /etc/sudoers.d/node-firewall
+# node may run exactly this script as root, and NOT set its environment: no
+# SETENV, because SETENV exempts caller-supplied variables from sudo's scrubbing
+# (BASH_ENV would run arbitrary code as root inside the bash script). Only the
+# three selection variables pass through, via env_keep; callers use plain
+# `sudo` (not -E / --preserve-env, which SETENV-less sudo rejects).
+RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/firewall-exec && \
+  printf '%s\n' \
+    'Defaults!/usr/local/bin/init-firewall.sh env_keep += "FIREWALL_MODULES FIREWALL_KERNEL_MODULES FIREWALL_ALLOW_LOCAL_NETWORKS"' \
+    'node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh' \
+    > /etc/sudoers.d/node-firewall && \
+  chmod 0440 /etc/sudoers.d/node-firewall && \
+  visudo -cf /etc/sudoers.d/node-firewall
 USER node
+
+
+# =============================================================================
+# Kernel base — kernel-core + the agent CLIs (Claude Code, Codex). Same name and
+# contents contract as before the kernel-core split: every agent image (via
+# beads-base) and the nexus root's orchestrator/tools/runner images build on it,
+# and those exec `claude` (and optionally `codex`) directly.
+# =============================================================================
+FROM kernel-core AS kernel-base
+
+ARG CLAUDE_CODE_VERSION=latest
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+# Codex CLI (@openai/codex) — pinned, unlike Claude Code: it ships a native
+# binary (~374 MB installed at 0.157.0), so a bump is a deliberate size change.
+# Gas City supports it as a provider (`gc init --default-provider codex`).
+# Runtime egress: firewall.d/_optional/openai.conf.
+ARG CODEX_VERSION=0.157.0
+RUN npm install -g @openai/codex@${CODEX_VERSION} && npm cache clean --force
 
 
 # =============================================================================
@@ -169,13 +198,14 @@ RUN BEADS_CLONE_URL=$(jq -r '."nexus:cloneURL"' /tmp/beads.jsonld) && \
 
 # =============================================================================
 # Beads substrate — the `bd` CLI plus the Dolt engine it stores the task graph
-# in. Every agent image re-parents onto this layer, so an agent container in any
-# consumer org can talk to the org's shared beads graph by construction.
+# in, built once on kernel-core (no agent CLIs). beads-server runs on it
+# directly; beads-base below copies the two binaries onto kernel-base so every
+# agent image can talk to the org's shared beads graph by construction.
 #
 # kernel-base itself deliberately stays lean: non-agent consumers that only want
 # the dev environment don't pay for ~140 MB of task-graph substrate.
 # =============================================================================
-FROM kernel-base AS beads-base
+FROM kernel-core AS beads-core
 
 USER root
 
@@ -231,7 +261,7 @@ USER node
 # path; embedded mode (bd's default) is single-writer and cannot back more than
 # one container. Clients reach it by compose DNS, no host port published.
 # =============================================================================
-FROM beads-base AS beads-server
+FROM beads-core AS beads-server
 
 USER root
 COPY .devcontainer/entrypoint-beads.sh /usr/local/bin/
@@ -246,6 +276,24 @@ ENV BEADS_DATA_DIR=/beads \
     BEADS_PORT=3307
 EXPOSE 3307
 CMD ["/usr/local/bin/entrypoint-beads.sh"]
+
+
+# =============================================================================
+# Beads base — kernel-base (agent CLIs) + the beads substrate from beads-core.
+# The parent of every agent image (hermes-deps, gascity). The binaries are
+# copied, not re-downloaded, so the pinned dolt/bd are byte-identical to the
+# ones beads-server runs.
+# =============================================================================
+FROM kernel-base AS beads-base
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    util-linux \
+  && apt-get clean && rm -rf /var/lib/apt/lists/*
+COPY --from=beads-core /usr/local/bin/dolt /usr/local/bin/dolt
+COPY --from=beads-core /usr/local/bin/bd /usr/local/bin/bd
+RUN command -v bd && command -v dolt && command -v flock && \
+    bd version && dolt version
+USER node
 
 
 # =============================================================================
@@ -359,7 +407,8 @@ RUN chmod +x /usr/local/bin/entrypoint-hermes.sh && \
 
 ENV HERMES_HOME=/home/node/.hermes \
     HERMES_WORKSPACE_PATH=/workspace \
-    DEFAULT_WORKSPACE_ROOT=/workspace
+    DEFAULT_WORKSPACE_ROOT=/workspace \
+    HERMES_DASHBOARD_AUTOSTART=false
 # Entrypoint starts as root for state-link bootstrap, then drops to node via gosu.
 
 

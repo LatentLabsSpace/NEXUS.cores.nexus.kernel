@@ -20,6 +20,7 @@ services:
       MISE_CONFIG_DIR: /etc/mise
       MISE_CACHE_DIR: /opt/mise/cache
       FIREWALL_MODULES: ${FIREWALL_MODULES:-all}
+      FIREWALL_KERNEL_MODULES: ${FIREWALL_KERNEL_MODULES:-all}
 
   # Generic beads server — the org's shared task graph. A `dolt sql-server` over
   # $BEADS_DATA_DIR, which consumers back with a named volume; without one the
@@ -95,6 +96,7 @@ services:
       MISE_CONFIG_DIR: /etc/mise
       MISE_CACHE_DIR: /opt/mise/cache
       FIREWALL_MODULES: ${FIREWALL_MODULES:-all}
+      FIREWALL_KERNEL_MODULES: ${FIREWALL_KERNEL_MODULES:-all}
       # --- Workspace bootstrap (entrypoint-base contract) ---
       AGENT_NAME: ${AGENT_NAME:-hermes}
       NEXUS_REPO_URL: ${NEXUS_REPO_URL:-}
@@ -156,6 +158,7 @@ services:
       MISE_CONFIG_DIR: /etc/mise
       MISE_CACHE_DIR: /opt/mise/cache
       FIREWALL_MODULES: ${FIREWALL_MODULES:-all}
+      FIREWALL_KERNEL_MODULES: ${FIREWALL_KERNEL_MODULES:-all}
       # --- Workspace bootstrap (entrypoint-base contract) ---
       NEXUS_REPO_URL: ${NEXUS_REPO_URL:-}
       NEXUS_BRANCH: ${NEXUS_BRANCH:-dev}
