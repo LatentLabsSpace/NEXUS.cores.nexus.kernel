@@ -1,5 +1,5 @@
 {
   "name": "nexus-kernel",
   "version": "0.1.0",
-  "description": "Kernel-resident skills for nexus-kernel consumers — portable agent capabilities that ship with the kernel submodule and update via ordinary pin bumps. First skill: /roadmap (beads-native roadmap management on the org's shared task graph)."
+  "description": "Kernel-resident skills for nexus-kernel consumers — portable agent capabilities that ship with the kernel submodule and update via ordinary pin bumps: /roadmap (beads-native roadmap management on the org's shared task graph), /pr-reviewer (cross-referenced, dependency-ordered review of the whole open-PR surface by parallel reviewer roles, coordinated through PR-comment claims, with per-role review/<role> commit statuses and an aggregate role) and /pr-review-loop (the author side: fix a PR's blocker findings and CI until every expected reviewer role signs off)."
 }

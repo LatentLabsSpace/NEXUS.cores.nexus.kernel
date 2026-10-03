@@ -1,0 +1,87 @@
+{
+  "skill_name": "pr-reviewer",
+  "sandbox": "Every eval runs against a fake GitHub (scripts/tests/fake_gh.py) built by evals/fixtures/make_fixture.py <dir> [variant]. The prompt gives the env prefix; nothing touches real PRs. Grade with: python3 evals/check_reviewer.py <id> <dir> <final-response-file>, plus the judgement assertions below.",
+  "evals": [
+    {
+      "id": "full-surface",
+      "fixture_variant": "basic",
+      "prompt": "Be the reviewer for the acme/app PR surface \u2014 go through everything open that needs a review and post your reviews. Use --agent eval-general. (Sandbox: prefix every reviewer.py call with the env assignments printed by the fixture setup, e.g. `env <ENVS> python3 .../reviewer.py scan`. There is no local clone; review from the stored diffs.)",
+      "expected_output": "Reviews posted on #12 (re-review: safe_load fixed, new blocker for logging the config incl. api_token), #10 (blocker: off-by-one allows limit+1 calls; weak test), #11 (blocker: self.denied never initialized; cross-ref stacked on #10, inherits #10's bug). #13 skipped. Final surface report with merge order #10 \u2192 #11, and #12/#10 README conflict noted.",
+      "assertions": [
+        "check_reviewer.py full-surface: all programmatic expectations pass",
+        "Each posted review follows references/review-format.md: headline verdict, a Verified list saying how, Medium (blocker) / Low sections, Cross-PR section, a Next (whose turn) line, and the verdict trailer",
+        "The #12 re-review walks the prior finding first (fixed) before new findings, and relies on the interdiff rather than re-reviewing from scratch",
+        "The #10 review notes the test only exercises one call and would not catch the boundary bug",
+        "At least one review or the final report notes that #10 and #12 both edit README.md (textual conflict for whichever merges second)",
+        "The final report is concise: one line per PR with verdict and whose turn, cross-PR findings, and a recommended merge order"
+      ]
+    },
+    {
+      "id": "triage",
+      "fixture_variant": "basic",
+      "prompt": "Which of the open acme/app PRs need a review from me, and in what order should I take them? Don't post anything yet. (Sandbox: prefix reviewer.py calls with the fixture env assignments.)",
+      "expected_output": "Read-only scan. Order: #12 (fix pushed after a blocker; author waiting), #10 (new), #11 (new, stacked on #10 so after it). #13 is up to date. Mentions overlaps (README with #12; limiter.py with #11).",
+      "assertions": [
+        "check_reviewer.py triage: all programmatic expectations pass",
+        "The agent used scan (not next/claim), so no claims were created",
+        "Each PR's position comes with a one-line reason tied to its state or relations",
+        "The answer mentions the #10/#12 README overlap or the #10/#11 limiter.py overlap as something to watch"
+      ]
+    },
+    {
+      "id": "handoff",
+      "fixture_variant": "handoff",
+      "prompt": "Another reviewer agent crashed partway through reviewing acme/app#10. Pick it up and finish that review. Use --agent eval-handoff. (Sandbox: prefix reviewer.py calls with the fixture env assignments; no local clone.)",
+      "expected_output": "Claims #10 (the old claim is expired, so takeover succeeds), reads notes.md, finishes the still-to-check boundary item (off-by-one blocker), mentions README conflict with #12, posts, expired claim removed, notes appended.",
+      "assertions": [
+        "check_reviewer.py handoff: all programmatic expectations pass",
+        "The agent read notes.md before reviewing and built on it (does not redo the already-verified pruning check at length)",
+        "The agent did not wait out or ask about the expired claim \u2014 it recognized it as expired and proceeded"
+      ]
+    },
+    {
+      "id": "headmove",
+      "fixture_variant": "headmove",
+      "prompt": "Review whatever is open on acme/app that needs it. Use --agent eval-headmove. (Sandbox: prefix reviewer.py calls with the fixture env assignments; no local clone.)",
+      "expected_output": "Claims #10, snapshots at 1111111; the author pushes 6666666 (fixes >= and adds a boundary test). post exits 4; agent snapshots again, reads the interdiff, rewrites the review for 6666666 (off-by-one fixed), posts with --head.",
+      "assertions": [
+        "check_reviewer.py headmove: all programmatic expectations pass",
+        "The agent did not bypass the stale-head guard with --allow-stale-head",
+        "The review says what changed between the two heads and re-verifies the fix rather than trusting the commit message"
+      ]
+    },
+    {
+      "id": "pushback",
+      "fixture_variant": "pushback",
+      "prompt": "Check the acme/app PRs and handle anything that needs a reviewer response. Use --agent eval-pushback. (Sandbox: prefix reviewer.py calls with the fixture env assignments; no local clone.)",
+      "expected_output": "#20 is in state reply. Agent re-checks the finding, sees the table name is allowlisted and name is bound, withdraws the blocker plainly, posts an updated review (0 blockers, maybe a nit) or note.",
+      "assertions": [
+        "check_reviewer.py pushback: all programmatic expectations pass",
+        "The retraction is plain and brief, without defensiveness, and does not invent a new blocker to save face",
+        "The agent verified the author's argument itself (read line 5 / ran it) rather than just accepting it"
+      ]
+    },
+    {
+      "id": "roles",
+      "fixture_variant": "roles",
+      "prompt": "You're the security reviewer for acme/app \u2014 run a security pass over the open PRs. Another agent is doing the general review in parallel. Use --agent eval-security. (Sandbox: prefix reviewer.py calls with the fixture env assignments; no local clone.)",
+      "expected_output": "Security-role reviews on #10,#11,#12,#13; general claim on #10 untouched. #12: token logging blocker. #10/#11: off-by-one is a correctness issue \u2014 at most noted under 'Outside my lens' or framed as a rate-limit bypass; #13 clean.",
+      "assertions": [
+        "check_reviewer.py roles: all programmatic expectations pass",
+        "Security reviews stay in the security lens (references/roles.md) and point general-correctness issues to 'Outside my lens' rather than making them security blockers without a security rationale",
+        "Reviews open with the role name"
+      ]
+    },
+    {
+      "id": "carry",
+      "fixture_variant": "carry",
+      "prompt": "Go through the open acme/app PRs as reviewer and post reviews. Use --agent eval-carry. (Sandbox: prefix reviewer.py calls with the fixture env assignments; no local clone.)",
+      "expected_output": "#31 (carry of #30) reviewed first; blocker: the carry silently drops #30's MAX_BACKOFF cap despite claiming 'no functional changes'. #30 gets at most a short superseded-aware note/review. Final report says merge #31 only after restoring the cap, then close #30.",
+      "assertions": [
+        "check_reviewer.py carry: all programmatic expectations pass",
+        "The agent compared the two diffs (not just #31 in isolation) to spot the dropped hunk",
+        "The final report recommends what happens to #30 (close after #31 lands) without the agent closing anything itself"
+      ]
+    }
+  ]
+}

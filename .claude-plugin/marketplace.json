@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "nexus-kernel",
-      "description": "Kernel-resident skills (/roadmap — beads-native roadmap management).",
+      "description": "Kernel-resident skills (/roadmap — beads-native roadmap management; /pr-reviewer — whole-surface PR review by parallel reviewer roles with per-role commit statuses; /pr-review-loop — author-side fix loop that consumes those reviews).",
       "source": ".",
       "category": "agent-infrastructure"
     }
