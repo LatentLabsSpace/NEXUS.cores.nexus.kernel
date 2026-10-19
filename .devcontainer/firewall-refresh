@@ -1,0 +1,101 @@
+#!/bin/bash
+# firewall-refresh — keep the boot-time domain allowlist current as DNS rotates.
+#
+# The kernel firewall (init-firewall.sh) turns domain names into IPs once, at
+# boot. Services such as github.com rotate their A records: on 2026-10-17
+# holodeck-hermes resolved github.com to 20.250.119.67, an address it hadn't
+# seen at boot and that isn't in GitHub's /meta ranges, so `git pull` was
+# rejected while the host (on a different answer) worked. This loop re-resolves
+# the SAME domain list the boot selected, and adds any new A records to the
+# allowed-domains ipset.
+#
+# Security model (it must not undo the one-shot lock from NEXUS #109):
+#   - Started only by init-firewall.sh, as root, after the boot has locked.
+#     Re-running init-firewall.sh after the lock exits early, so node can never
+#     start a second refresher with its own inputs.
+#   - Reads only the domain list the boot wrote to a root-only state dir
+#     (/run/kernel-firewall, 0700). Names never change after boot; only their
+#     current addresses are followed. The policy is the boot's set of names.
+#   - Lookups go over TCP (dig +tcp). Agent code runs as node while this loop
+#     runs, can bind loopback UDP ports and read /proc/net/udp, so a UDP answer
+#     could be raced with a forged one; TCP can't be forged blind.
+#   - Add-only, public unicast IPv4 only (fw_public_ipv4: no private, loopback,
+#     link-local/metadata, CGNAT, multicast or reserved space), and capped
+#     (MAX_ADDS, a constant, not an env knob).
+#   - Runs in its own session (setsid), so it outlives the entrypoint shell and
+#     can't be killed by a process-group signal sent to it.
+#
+# Usage (from init-firewall.sh only): firewall-refresh <state-dir> <interval-seconds>
+# init-firewall.sh validates the interval (FIREWALL_REFRESH_SECONDS, 30..3600).
+set -uo pipefail
+IFS=$'\n\t'
+trap '' PIPE HUP
+# shellcheck source=firewall-lib.sh
+. /usr/local/bin/firewall-lib.sh
+
+STATE_DIR="${1:?usage: firewall-refresh <state-dir> <interval-seconds>}"
+DOMAINS_FILE="$STATE_DIR/domains"
+LOG="$STATE_DIR/refresh.log"
+INTERVAL="${2:?usage: firewall-refresh <state-dir> <interval-seconds>}"
+MAX_ADDS=512
+MISS_WARN_PASSES=5           # consecutive empty answers before a console warning
+LOG_MAX_BYTES=1048576
+
+log() {
+    # Truncate rather than rotate: the log is a diagnostic, not an audit trail.
+    if [ -f "$LOG" ] && [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt "$LOG_MAX_BYTES" ]; then
+        : > "$LOG"
+    fi
+    printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG"
+}
+console() {
+    # Events an operator must see also go to stdout. init-firewall.sh hands us
+    # the container's log stream when it was started from PID 1, else /dev/null.
+    # (Not /proc/1/fd/1: opening another user's fd needs CAP_SYS_PTRACE, which
+    # Docker drops, so it silently fails when PID 1 runs as node.)
+    log "$*"
+    printf 'firewall-refresh: %s\n' "$*" 2>/dev/null || true
+}
+
+[[ "$INTERVAL" =~ ^[0-9]+$ ]] && [ "$INTERVAL" -ge 30 ] || { console "ERROR: bad interval '$INTERVAL'; exiting"; exit 1; }
+[ -r "$DOMAINS_FILE" ] || { console "ERROR: no domain list at $DOMAINS_FILE; exiting"; exit 1; }
+DOMAINS=()
+while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    if fw_valid_domain "$d"; then DOMAINS+=("$d"); else console "WARN: ignoring invalid domain '$d'"; fi
+done < "$DOMAINS_FILE"
+console "started: ${#DOMAINS[@]} domains over TCP every ${INTERVAL}s, max ${MAX_ADDS} additions"
+
+declare -A misses=()
+added=0
+capped=false
+while :; do
+    sleep "$INTERVAL"
+    $capped && continue
+    for domain in "${DOMAINS[@]}"; do
+        ips=$(dig +tcp +noall +answer +time=3 +tries=1 A "$domain" 2>/dev/null | awk '$4 == "A" {print $5}')
+        if [ -z "$ips" ]; then
+            # Keep what boot (or earlier passes) added; warn once per run of misses.
+            misses[$domain]=$(( ${misses[$domain]:-0} + 1 ))
+            [ "${misses[$domain]}" -eq "$MISS_WARN_PASSES" ] && \
+                console "WARN: $domain returned no A records for $MISS_WARN_PASSES passes in a row"
+            continue
+        fi
+        misses[$domain]=0
+        while read -r ip; do
+            fw_public_ipv4 "$ip" || { log "WARN: ignoring non-public or invalid IP '$ip' for $domain"; continue; }
+            ipset test allowed-domains "$ip" >/dev/null 2>&1 && continue
+            if [ "$added" -ge "$MAX_ADDS" ]; then
+                console "WARN: reached the cap of $MAX_ADDS additions; new addresses are no longer followed until the container restarts"
+                capped=true
+                break 2
+            fi
+            if ipset add -exist allowed-domains "$ip" 2>/dev/null; then
+                added=$((added + 1))
+                log "added $ip for $domain ($added/$MAX_ADDS)"
+            else
+                log "WARN: ipset add failed for $ip ($domain)"
+            fi
+        done <<< "$ips"
+    done
+done

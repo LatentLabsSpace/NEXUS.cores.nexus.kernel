@@ -36,8 +36,39 @@ cd "$DATA_DIR"
 dolt config --global --add user.name "${BEADS_DOLT_USER_NAME:-beads-server}" >/dev/null
 dolt config --global --add user.email "${BEADS_DOLT_USER_EMAIL:-beads-server@nexus.local}" >/dev/null
 
-echo "Serving beads graph from $DATA_DIR on ${BIND_HOST}:${PORT}"
-exec dolt sql-server \
-  --host "$BIND_HOST" \
-  --port "$PORT" \
-  --data-dir "$DATA_DIR"
+# Online auto-GC keeps the chunk journal compact. dolt keeps the journal's index
+# in RAM, so an uncompacted journal IS the server's memory baseline: on the first
+# consumer an 11G / 5.45M-chunk journal OOM-looped the 3g server every ~32min.
+# archive_level 0 matters: the default (1) builds compressed archives in memory
+# and was OOM-killed even at 5.5G, while level 0 GC'd the same store in 57s.
+AUTO_GC="${BEADS_DOLT_AUTO_GC:-true}"
+ARCHIVE_LEVEL="${BEADS_DOLT_AUTO_GC_ARCHIVE_LEVEL:-0}"
+# Online counterpart of the offline recipe's --incremental-file-size: GC flushes
+# its output in pieces of this many bytes instead of building large files in
+# memory. dolt's own default is 0 (off); 0 here also means off.
+INCREMENTAL="${BEADS_DOLT_AUTO_GC_INCREMENTAL_FILE_SIZE:-268435456}"
+case "$AUTO_GC" in true|false) ;; *) echo "BEADS_DOLT_AUTO_GC must be true|false, got '$AUTO_GC'" >&2; exit 1 ;; esac
+case "$ARCHIVE_LEVEL" in 0|1) ;; *) echo "BEADS_DOLT_AUTO_GC_ARCHIVE_LEVEL must be 0|1, got '$ARCHIVE_LEVEL'" >&2; exit 1 ;; esac
+case "$INCREMENTAL" in ''|*[!0-9]*) echo "BEADS_DOLT_AUTO_GC_INCREMENTAL_FILE_SIZE must be a byte count (0 = off), got '$INCREMENTAL'" >&2; exit 1 ;; esac
+
+# Behaviour settings exist only in the config file (no CLI flags), and
+# sql-server ignores $DATA_DIR/config.yaml once --host/--port/--data-dir are
+# passed. So the whole server config is rendered here and passed via --config.
+# It lives outside the data volume: the kernel owns it and it is regenerated on
+# every start.
+CONFIG=/tmp/beads-sql-server.yaml
+cat > "$CONFIG" <<EOF
+log_level: info
+behavior:
+  auto_gc_behavior:
+    enable: ${AUTO_GC}
+    archive_level: ${ARCHIVE_LEVEL}
+    incremental_file_size: ${INCREMENTAL}
+listener:
+  host: "${BIND_HOST}"
+  port: ${PORT}
+data_dir: "${DATA_DIR}"
+EOF
+
+echo "Serving beads graph from $DATA_DIR on ${BIND_HOST}:${PORT} (auto_gc=${AUTO_GC} archive_level=${ARCHIVE_LEVEL} incremental_file_size=${INCREMENTAL})"
+exec dolt sql-server --config "$CONFIG"

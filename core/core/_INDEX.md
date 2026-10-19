@@ -6,4 +6,4 @@
 ## Files
 | Name | Description |
 |------|-------------|
-| `nexus.jsonld` | Foundation Nexus resource — defines hasCore, hasPort, hasBeacon, hasBookmark relationships |
+| `nexus.jsonld` | JSON-LD context and definition of the recursive inner Nexus with rdf/owl vocabularies |

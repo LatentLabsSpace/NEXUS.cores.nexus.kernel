@@ -6,11 +6,11 @@
 ## Folders
 | Name | Description |
 |------|-------------|
-| `bookmarks/` | Bookmark collections that track Nexus instances across commits |
-| `contexts/` | JSON-LD context definitions — prefix mappings, vocab bindings, and namespace declarations |
-| `entities/` | Entity resource catalog (empty, awaiting registrations) |
-| `locations/` | Location resource catalog (empty, awaiting registrations) |
-| `ontologies/` | OWL ontology definitions — Nexus, Self, and Space type systems |
+| `bookmarks/` | DCAT catalog grouping bookmark collections by domain |
+| `contexts/` | JSON-LD context definitions — prefix mappings, vocab bindings, and namespace declarations used across the linked data graph |
+| `entities/` | DCAT catalog for entity resources — currently empty, awaiting entity registrations |
+| `locations/` | DCAT catalog for location resources — currently empty, awaiting location registrations |
+| `ontologies/` | OWL ontology definitions — classes, properties, and relationships that form the Nexus type system |
 
 ## Files
 | Name | Description |

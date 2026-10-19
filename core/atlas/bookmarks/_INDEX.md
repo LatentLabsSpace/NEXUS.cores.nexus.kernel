@@ -6,7 +6,7 @@
 ## Folders
 | Name | Description |
 |------|-------------|
-| `nexus/` | Named pointers that track specific Nexus instances across commits |
+| `nexus/` | DCAT catalog of NexusBookmark resources — named pointers that track specific Nexus instances across commits |
 
 ## Files
 | Name | Description |

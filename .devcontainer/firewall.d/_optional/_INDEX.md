@@ -6,8 +6,8 @@
 ## Files
 | Name | Description |
 |------|-------------|
-| `anthropic.conf` | Anthropic API — Claude Code and hermes' anthropic provider (moved from `_required/`) |
 | `anthropic-telemetry.conf` | Claude Code telemetry (Sentry, Statsig) — degrades harmlessly when unreachable |
+| `anthropic.conf` | Anthropic API — Claude Code and hermes' anthropic provider (moved from `_required/`) |
 | `fireworks.conf` | Fireworks AI API, console, and gRPC gateway used by firectl |
 | `linear.conf` | Linear API |
 | `mise.conf` | mise runtime manager download endpoint and Python package registries (PyPI) |

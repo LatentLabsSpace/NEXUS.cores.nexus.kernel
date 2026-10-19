@@ -88,6 +88,15 @@ When the root has no binding (or an empty roadmap):
 ## 4. Modeling contract
 
 - **Root epic** — the roadmap itself (from the binding).
+- **Sub-roadmaps** = `milestone` nodes, never epics. A roadmap nested
+  inside another (one human-stated objective with its own phases) is a
+  bead of type `milestone` under the parent root, labeled `roadmap` +
+  `leaf:milestone` + `owner:human`, whose acceptance is the
+  human-observable finish line ("Observed by <who>: …"). Its phases are
+  `epic` children as below. Map renderers treat only parentless epics and
+  milestones as roadmaps; an epic *with* a parent is an intermediate node,
+  so a sub-roadmap authored as an epic is drawn flat into its parent's map
+  instead of collapsing into one drill-down card.
 - **Phases** = `epic` nodes under the root, each **blocked by a `human`
   gate** (§5) until sign-off, with explicit `blocks` edges expressing phase
   order. Label every phase `roadmap` + `phase:<n>`.
@@ -102,6 +111,10 @@ When the root has no binding (or an empty roadmap):
   separate, deliberate act — nothing is auto-dispatched.
 - **Ordering lives on edges.** `blocks` between beads is the only sequencing
   the graph respects. Titles, priorities, and phase numbers order nothing.
+  Phase-to-phase flow on a rendered map comes from leaf→leaf edges that
+  cross phases, so give an already-done phase a closed leaf (e.g. the
+  merged idea file) for the next phase's entry leaves to block on — a
+  closed blocker draws the flow without hiding any ready work.
 - **Never ephemeral.** Roadmap structure is permanent beads — no wisps, no
   `--ephemeral` (they are garbage-collected).
 
@@ -193,3 +206,7 @@ container that has no `gc`, say so — routing is not this skill's job.
 9. Report verbs show shape, not content — advising on a bead without
    reading its comments produces confident, stale guidance (a decision
    already recorded on the bead gets asked for again).
+10. A sub-roadmap created as an `epic` under another root renders flat —
+    its phases and leaves spill into the parent's map. Nested roadmaps are
+    `milestone` beads (§4); fix a mistyped one with
+    `bd update <id> --type milestone`.

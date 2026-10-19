@@ -6,10 +6,10 @@
 ## Folders
 | Name | Description |
 |------|-------------|
-| `scripts/` | `gh.sh` (token-injected gh wrapper, shared with pr-reviewer), `pr-status.sh` (CI + inline threads + per-role review state via `reviewer.py reviews`; `--wait` until reviewers cover the head), `pr-resolve.sh` (resolve review-bot inline threads) |
-| `references/` | GitHub API specifics — review comments and `review/<role>` statuses, replying to reviewers, thread resolution, check-state taxonomy |
+| `references/` | Reference docs for pr-review-loop. |
+| `scripts/` | Shell helpers for the PR fix loop — token-safe gh wrapper, status summary, review-thread resolution |
 
 ## Files
 | Name | Description |
 |------|-------------|
-| `SKILL.md` | Skill definition — identity, blocker-vs-nit triage, the assess→fix→push→wait loop, reconcile-before-terminate gate, escalation criteria, safety rules |
+| `SKILL.md` | Skill definition: drive an open PR to green by fixing CI and reviewer blockers, deferring nits |

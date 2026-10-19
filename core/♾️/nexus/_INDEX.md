@@ -6,7 +6,7 @@
 ## Folders
 | Name | Description |
 |------|-------------|
-| `beacons/` | Configurable I/O data links for Nexus networking |
+| `beacons/` | DCAT catalog of NexusBeacon resources — configurable I/O data links for Nexus networking |
 
 ## Files
 | Name | Description |

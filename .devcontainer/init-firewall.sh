@@ -46,6 +46,14 @@ fi
 iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
 # Allow inbound DNS responses
 iptables -A INPUT -p udp --sport 53 -j ACCEPT
+# TCP DNS, only to this container's own resolvers. firewall-refresh queries
+# over TCP so agent code can't race it with forged UDP answers. (On compose
+# networks the resolver is 127.0.0.11, already reachable via lo.)
+while IFS=$' \t' read -r _kw _ns _rest; do
+    if [ "$_kw" = nameserver ] && [[ "$_ns" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+        iptables -A OUTPUT -p tcp -d "$_ns" --dport 53 -j ACCEPT
+    fi
+done < /etc/resolv.conf
 # Allow outbound SSH
 iptables -A OUTPUT -p tcp --dport 22 -j ACCEPT
 # Allow inbound SSH responses
@@ -58,6 +66,8 @@ iptables -A OUTPUT -o lo -j ACCEPT
 ipset create allowed-domains hash:net
 
 DROPIN_DIR="$(dirname "$0")/firewall.d"
+# shellcheck source=firewall-lib.sh
+. "$(dirname "$0")/firewall-lib.sh"   # fw_valid_domain, fw_public_ipv4
 
 # Load universal kernel domains. Both tiers are selected per module by
 # FIREWALL_KERNEL_MODULES (default: all); the tiers differ only in what a DNS
@@ -243,7 +253,20 @@ fi
 ALL_DOMAINS=("${REQUIRED_DOMAINS[@]}" "${OPTIONAL_DOMAINS[@]}")
 for domain in "${ALL_DOMAINS[@]}"; do
     echo "Resolving $domain..."
-    ips=$(dig +noall +answer A "$domain" | awk '$4 == "A" {print $5}')
+    # Query several times and take the union: rotating services hand out a
+    # small pool round-robin (2026-10-17: github.com and api.github.com each
+    # answered with an extra address outside GitHub's /meta ranges on ~1 query
+    # in 5). One query pins only part of the pool; firewall-refresh (below)
+    # picks up whatever is still missing.
+    if fw_valid_domain "$domain"; then
+        ips=$(for _q in 1 2 3 4; do dig +noall +answer +time=3 +tries=1 A "$domain" 2>/dev/null || true; done \
+            | awk '$4 == "A" {print $5}' | sort -u)
+    else
+        # Not a plain hostname (e.g. a line starting with "-", which dig would
+        # read as an option). Treated like a resolution failure below.
+        echo "WARN: '$domain' is not a valid hostname"
+        ips=""
+    fi
     if [ -z "$ips" ]; then
         is_required=false
         for rd in "${REQUIRED_DOMAINS[@]}"; do
@@ -262,6 +285,10 @@ for domain in "${ALL_DOMAINS[@]}"; do
         if [[ ! "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
             echo "ERROR: Invalid IP from DNS for $domain: $ip"
             exit 1
+        fi
+        if ! fw_public_ipv4 "$ip"; then
+            echo "WARN: $domain resolved to non-public address $ip; not allowing it"
+            continue
         fi
         echo "Adding $ip for $domain"
         ipset add -exist allowed-domains "$ip"
@@ -362,10 +389,19 @@ else
     echo "Firewall verification passed - unable to reach https://example.com as expected"
 fi
 
-# Verify GitHub API access
+# Verify GitHub API access. Retried: a single attempt can land on a rotated
+# address the boot queries didn't see, which would fail an otherwise good boot.
+_reach_github() {
+    local _try
+    for _try in 1 2 3; do
+        curl --connect-timeout 5 https://api.github.com/zen >/dev/null 2>&1 && return 0
+        sleep 2
+    done
+    return 1
+}
 if ! _contains github "${_kloaded[@]}"; then
     echo "Firewall verification: github module not selected, skipping the GitHub reachability check"
-elif ! curl --connect-timeout 5 https://api.github.com/zen >/dev/null 2>&1; then
+elif ! _reach_github; then
     echo "ERROR: Firewall verification failed - unable to reach https://api.github.com"
     exit 1
 else
@@ -376,3 +412,45 @@ fi
 # DROP policies are in place and verification passed.
 ipset create kernel-firewall-done hash:ip
 echo "Firewall configuration locked for this container start"
+
+# --- DNS re-resolution -------------------------------------------------------
+# The domain loop above pins each name to the A records it had at boot. Names
+# like github.com rotate (2026-10-17: a post-boot answer outside both the boot
+# set and GitHub's /meta ranges blocked git over HTTPS). firewall-refresh
+# re-resolves the SAME names on a timer and adds new addresses; see its header
+# for the security model. Started after the lock, so a re-run of this script
+# (which exits at the top) can never start a second one, and a boot that
+# failed part-way never leaves one behind.
+# FIREWALL_REFRESH_SECONDS: 0 disables; otherwise clamped to 30..3600 (default 120).
+_refresh="${FIREWALL_REFRESH_SECONDS:-120}"
+if [[ ! "$_refresh" =~ ^[0-9]{1,5}$ ]]; then
+    echo "WARN: invalid FIREWALL_REFRESH_SECONDS '$_refresh'; using 120"
+    _refresh=120
+fi
+_refresh=$((10#$_refresh))
+if [ "$_refresh" -eq 0 ]; then
+    echo "DNS refresh disabled (FIREWALL_REFRESH_SECONDS=0): allowlist IPs are fixed at boot"
+else
+    [ "$_refresh" -lt 30 ] && _refresh=30
+    [ "$_refresh" -gt 3600 ] && _refresh=3600
+    _fw_state=/run/kernel-firewall
+    # The firewall is already locked and correct at this point, so a failure
+    # here only warns: it must not abort a healthy container start.
+    if install -d -m 0700 -o root -g root "$_fw_state" \
+       && (umask 077; printf '%s\n' "${ALL_DOMAINS[@]}" > "$_fw_state/domains"); then
+        # Share stdout with the refresher only when it is the container's own
+        # log stream (started from PID 1). Under `docker exec` (a devcontainer
+        # postStartCommand) an inherited stdout would keep that exec, and the
+        # devcontainer start waiting on it, open forever.
+        if fw_started_by_pid1; then
+            setsid /usr/local/bin/firewall-refresh "$_fw_state" "$_refresh" </dev/null 2>/dev/null &
+            _fw_where="events in docker logs"
+        else
+            setsid /usr/local/bin/firewall-refresh "$_fw_state" "$_refresh" </dev/null >/dev/null 2>&1 &
+            _fw_where="started via exec: events only in the log"
+        fi
+        echo "DNS refresh: re-resolving ${#ALL_DOMAINS[@]} domains every ${_refresh}s ($_fw_where; full log: $_fw_state/refresh.log, root-only)"
+    else
+        echo "WARN: could not prepare $_fw_state; DNS refresh not started (allowlist IPs fixed at boot)"
+    fi
+fi

@@ -6,7 +6,7 @@ services:
       target: kernel-base
       args:
         TZ: ${TZ:-America/Los_Angeles}
-        CLAUDE_CODE_VERSION: latest
+        CLAUDE_CODE_VERSION: "2.1.296"
         GIT_DELTA_VERSION: "0.18.2"
         ZSH_IN_DOCKER_VERSION: "1.2.0"
     cap_add:
@@ -43,7 +43,7 @@ services:
       target: beads-server
       args:
         TZ: ${TZ:-America/Los_Angeles}
-        CLAUDE_CODE_VERSION: latest
+        CLAUDE_CODE_VERSION: "2.1.296"
         GIT_DELTA_VERSION: "0.18.2"
         ZSH_IN_DOCKER_VERSION: "1.2.0"
     command: /usr/local/bin/entrypoint-beads.sh
@@ -82,7 +82,7 @@ services:
       target: hermes
       args:
         TZ: ${TZ:-America/Los_Angeles}
-        CLAUDE_CODE_VERSION: latest
+        CLAUDE_CODE_VERSION: "2.1.296"
         GIT_DELTA_VERSION: "0.18.2"
         ZSH_IN_DOCKER_VERSION: "1.2.0"
     cap_add:
@@ -143,7 +143,7 @@ services:
       target: gascity
       args:
         TZ: ${TZ:-America/Los_Angeles}
-        CLAUDE_CODE_VERSION: latest
+        CLAUDE_CODE_VERSION: "2.1.296"
         GIT_DELTA_VERSION: "0.18.2"
         ZSH_IN_DOCKER_VERSION: "1.2.0"
     cap_add:

@@ -118,6 +118,8 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
 # DNS miss) and _optional/ (warn-and-skip) are always loaded at boot.
 COPY .devcontainer/init-firewall.sh /usr/local/bin/
 COPY .devcontainer/firewall-exec /usr/local/bin/
+COPY .devcontainer/firewall-refresh /usr/local/bin/
+COPY .devcontainer/firewall-lib.sh /usr/local/bin/
 COPY .devcontainer/firewall.d/_required/ /usr/local/bin/firewall.d/_required/
 COPY .devcontainer/firewall.d/_optional/ /usr/local/bin/firewall.d/_optional/
 
@@ -125,11 +127,13 @@ USER root
 # node may run exactly this script as root, and NOT set its environment: no
 # SETENV, because SETENV exempts caller-supplied variables from sudo's scrubbing
 # (BASH_ENV would run arbitrary code as root inside the bash script). Only the
-# three selection variables pass through, via env_keep; callers use plain
+# firewall selection variables pass through, via env_keep (FIREWALL_REFRESH_SECONDS
+# is validated and clamped by the script); callers use plain
 # `sudo` (not -E / --preserve-env, which SETENV-less sudo rejects).
-RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/firewall-exec && \
+RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/firewall-exec /usr/local/bin/firewall-refresh && \
+  chmod 0644 /usr/local/bin/firewall-lib.sh && \
   printf '%s\n' \
-    'Defaults!/usr/local/bin/init-firewall.sh env_keep += "FIREWALL_MODULES FIREWALL_KERNEL_MODULES FIREWALL_ALLOW_LOCAL_NETWORKS"' \
+    'Defaults!/usr/local/bin/init-firewall.sh env_keep += "FIREWALL_MODULES FIREWALL_KERNEL_MODULES FIREWALL_ALLOW_LOCAL_NETWORKS FIREWALL_REFRESH_SECONDS"' \
     'node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh' \
     > /etc/sudoers.d/node-firewall && \
   chmod 0440 /etc/sudoers.d/node-firewall && \
@@ -145,7 +149,15 @@ USER node
 # =============================================================================
 FROM kernel-core AS kernel-base
 
-ARG CLAUDE_CODE_VERSION=latest
+# Claude Code — pinned to an exact version. `latest` made every rebuild a
+# behaviour change: 2.1.259 (2026-09-04) arrived with a first-run trust
+# dialog defaulting to "No, exit", and every Gas City session died at it.
+# entrypoint-gascity.sh seeds that dialog's config; the pin keeps the
+# config schema stable. Bump deliberately, and on a bump re-check the trust
+# lookup (projects.<dir>.hasTrustDialogAccepted, inherited from ancestors)
+# and customApiKeyResponses in the new CLI. compose.base.yml passes the same
+# value.
+ARG CLAUDE_CODE_VERSION=2.1.296
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 # Codex CLI (@openai/codex) — pinned, unlike Claude Code: it ships a native
 # binary (~374 MB installed at 0.157.0), so a bump is a deliberate size change.

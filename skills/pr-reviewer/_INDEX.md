@@ -6,11 +6,12 @@
 ## Folders
 | Name | Description |
 |------|-------------|
-| `scripts/` | `reviewer.py` (stdlib CLI: init/scan/next/claim/renew/release/snapshot/checkout/show/post/reviews; mirrors verdicts as `review/<role>` commit statuses) and `tests/` (protocol tests against a fake gh) |
-| `references/` | Coordination protocol (incl. commit statuses), reviewer roles (incl. aggregate), review format |
-| `evals/` | Sandbox eval suite — fixture builder, programmatic grader, `evals.json` |
+| `evals/` | Sandboxed eval suite for pr-reviewer — fake-GitHub fixtures, eval prompts and a programmatic grader |
+| `references/` | Reference docs for pr-reviewer — coordination protocol, review format and role definitions |
+| `scripts/` | The reviewer.py coordination CLI and its protocol tests |
 
 ## Files
 | Name | Description |
 |------|-------------|
-| `SKILL.md` | Skill definition — setup, survey → claim → review → post → report loop, multi-agent operation, boundaries |
+| `SKILL.md` | Skill definition: multi-repo PR-surface reviewer with role-based claims and verdicts |
+| `program.md` | Improvement priorities, fixed constraints and known weaknesses for tuning the skill |

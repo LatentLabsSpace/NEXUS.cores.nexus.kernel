@@ -6,11 +6,12 @@
 ## Folders
 | Name | Description |
 |------|-------------|
-| `.devcontainer/` | Base devcontainer for the kernel — generic Node 22 + mise + zsh + Claude Code scaffold, designed for extension by downstream projects |
-| `.vscode/` | Editor settings — LF line endings for standalone use of this directory |
-| `core/` | Inner core — self-referential kernel containing the atlas knowledge graph, recursive core, and outer boundary |
-| `skills/` | Kernel plugin skills (`nexus-kernel:*`) — `roadmap`, `pr-reviewer` (whole-surface PR review by parallel reviewer roles with `review/<role>` commit statuses and an aggregate role), `pr-review-loop` (author-side fix loop that consumes those reviews) |
-| `seed/` | The consumer wiring layer as templates plus `bootstrap.sh` — renders compose, devcontainer, firewall, and scaffold into a target repo; idempotent and retrofit-safe |
+| `.claude-plugin/` | Claude Code plugin and marketplace manifests that publish the kernel's skills |
+| `.devcontainer/` | Base devcontainer for the kernel — generic Node 22 + mise + zsh + Claude Code scaffold plus the beads task-graph substrate, an optional hermes agent-harness image, and a bead-native Gas City orchestrator image, designed for extension by downstream projects |
+| `.vscode/` | Editor settings for the kernel |
+| `core/` | Inner core of the Nexus — the self-referential kernel containing the atlas knowledge graph, the recursive core, and the outer boundary |
+| `seed/` | The consumer wiring layer — templates plus a renderer that turns any repo into a nexus kernel consumer; idempotent and retrofit-safe |
+| `skills/` | Kernel-shipped agent skills — PR review loop, PR reviewer and beads roadmap management |
 
 ## Files
 | Name | Description |

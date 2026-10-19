@@ -109,6 +109,11 @@ The server needs one thing from the consumer: a named volume at
 | `BEADS_BIND_HOST` | `0.0.0.0` | Bind address (containers need a non-loopback bind) |
 | `BEADS_DOLT_PASSWORD` | _(empty)_ | Sets a root password **at first init only** |
 | `BEADS_DOLT_USER_NAME` / `_EMAIL` | `beads-server` / `beads-server@nexus.local` | Dolt commit identity |
+| `BEADS_DOLT_AUTO_GC` | `true` | Online auto-GC; keeps the chunk journal (whose index dolt holds in RAM) compact |
+| `BEADS_DOLT_AUTO_GC_ARCHIVE_LEVEL` | `0` | GC archive compression. Keep `0`: level `1` builds archives in memory and OOM-kills GC on a capped server |
+| `BEADS_DOLT_AUTO_GC_INCREMENTAL_FILE_SIZE` | `268435456` | GC output flushed in pieces of this many bytes (`0` = off); mirrors the proven offline `--incremental-file-size` |
+
+The three `BEADS_DOLT_AUTO_GC*` knobs are read by the entrypoint but **not** passed through `compose.base.yml` (like `BEADS_BIND_HOST`): set them in your consumer's compose override `environment:` if you need non-defaults.
 
 The entrypoint exports `DOLT_ROOT_HOST=%` before starting the server. Dolt
 otherwise creates its root superuser as `root@localhost`, which no client
@@ -184,7 +189,24 @@ via `NEXUS_REPO_URL`/`NEXUS_BRANCH`, then firewall init), then:
    and runs the live `bd init` itself at start, so the entrypoint never does.
 2. `gc rig add $NEXUS_WORKSPACE` — the cloned workspace becomes the city's
    first rig (skipped until a repo is mounted or cloned).
-3. `exec gc start --foreground` — the per-city controller as the container
+3. Seed the Claude CLI's first-run state in `~/.claude.json`: workspace trust
+   for `$GC_CITY_DIR`, the workspace, every existing agent workdir and
+   `$GC_CLAUDE_TRUST_DIRS`; `hasCompletedOnboarding`; and approval of
+   `ANTHROPIC_API_KEY` when set. gc drives sessions as interactive `claude` in
+   tmux and its startup nudge presses Enter on the default, and the trust
+   dialog's default is "No, exit". Unseeded, every session dies at the dialog
+   and gc respawns it. The file lives in the container filesystem, so the
+   seed runs on every boot to survive recreates. Trust is inherited from
+   ancestor directories, so seeding the city covers agent workdirs created
+   later. Trust is more than skipping a prompt: inside a trusted directory
+   (and below it), the CLI applies project settings such as
+   `.claude/settings.json` hooks and permissions without asking. So add a
+   directory to `GC_CLAUDE_TRUST_DIRS` only if you would accept the hooks
+   and permissions committed in it. The merge keeps existing keys, never
+   overrides a rejected API key,
+   and soft-fails with a warning. `CLAUDE_CODE_VERSION` is pinned in
+   `Dockerfile.base` so this config schema can't change under a rebuild.
+4. `exec gc start --foreground` — the per-city controller as the container
    process, the same shape as the fork's own container images. The
    supervisor-managed `gc start` backgrounds itself, which suits a host, not
    a container. gc does not reap children, so the generic service sets
@@ -199,6 +221,8 @@ volume, the city dies with the container otherwise.
 | `GC_TEMPLATE` | `gascity` | `gc init --template` value |
 | `GC_DEFAULT_PROVIDER` | `claude` | Agent runtime provider. Both the `claude` and `codex` CLIs ship in `kernel-base`, and gc supports either (`codex` reads `~/.codex/auth.json`) |
 | `GC_RIG_NAME` | workspace basename | Rig name for the workspace |
+| `GC_CLAUDE_TRUST_DIRS` | _(empty)_ | Extra colon-separated directories to seed as trusted for the Claude CLI (the city, the workspace and existing agent workdirs are always seeded). Trusting a dir also applies its project `.claude/settings.json` hooks and permissions without a prompt |
+| `GASCITY_SEED_APPROVE_API_KEY` | `true` | `false` stops the seed from pre-approving `ANTHROPIC_API_KEY`, so the CLI asks instead |
 | `GC_DOLT_DATABASE` | `beads` | The city's beads database on the shared server |
 | `GC_BEADS_PROJECT_ID` | `city` | Beads project id (gc can't derive one from a non-`bd_`-prefixed database name) |
 | `BEADS_DOLT_SERVER_HOST/PORT/USER`, `BEADS_DOLT_PASSWORD` | `beads` / `3307` / `root` / _(empty)_ | Shared-server endpoint, same variables as the client contract above |
@@ -306,6 +330,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 | `FIREWALL_MODULES` | `all` | The consumer's own top-level `firewall.d/*.conf` drop-ins: comma-separated names, `all`, or `none` |
 | `FIREWALL_KERNEL_MODULES` | `all` | Which kernel modules load, from **both** tiers: `all`, `none`, an allowlist (`github,npm,openai`), or all-minus (`all,-vscode,-anthropic-telemetry`). See [Firewall drop-ins](#firewall-drop-ins) |
 | `FIREWALL_ALLOW_LOCAL_NETWORKS` | `1` | `0` drops the container's own compose networks from the allowlist (breaks reaching sibling services) |
+| `FIREWALL_REFRESH_SECONDS` | `120` | How often `firewall-refresh` re-resolves the boot's domain list and adds rotated addresses; clamped to 30..3600, `0` disables (IPs fixed at boot) |
 
 ### `beads` service (`entrypoint-beads.sh`)
 
@@ -425,15 +450,45 @@ warn-and-skip. A consumer never needs to shadow a kernel conf to soften it.
 - **node can run `init-firewall.sh` as root, but cannot set its environment.** The
   sudoers rule has no `SETENV`. With `SETENV`, caller-supplied variables skip sudo's
   scrubbing, and `BASH_ENV` ran arbitrary code as root inside the (bash) script.
-  Only `FIREWALL_MODULES`, `FIREWALL_KERNEL_MODULES` and
-  `FIREWALL_ALLOW_LOCAL_NETWORKS` pass through, via `env_keep`. Call it with plain
+  Only `FIREWALL_MODULES`, `FIREWALL_KERNEL_MODULES`,
+  `FIREWALL_ALLOW_LOCAL_NETWORKS` and `FIREWALL_REFRESH_SECONDS` pass through, via
+  `env_keep`; the last is validated and clamped, and only sets an interval. Call it with plain
   `sudo`: `sudo -E` / `--preserve-env` are rejected without `SETENV`.
 - **One-shot per container start.** Once a boot completes, the script creates a
   marker ipset (`kernel-firewall-done`), and every later run is a no-op. A
   devcontainer `postStartCommand`, or an agent re-running it with its own module
   choices, cannot widen egress after boot. Rules live in the container's network
-  namespace, so a restart starts clean; refreshing rotating CDN IPs therefore means
-  restarting the container.
+  namespace, so a restart starts clean.
+- **Rotating addresses follow the boot's names, not new names.** Boot resolves each
+  domain 4 times and allows the union, because services such as github.com
+  hand out a small pool round-robin, including addresses outside GitHub's `/meta`
+  ranges (2026-10-17: `20.250.119.67` for github.com and `20.250.119.72` for
+  api.github.com, about 1 query in 5). After the lock, `init-firewall.sh` starts
+  `firewall-refresh` as root in its own session. It re-resolves the same domain
+  list every `FIREWALL_REFRESH_SECONDS` and adds new A records to
+  `allowed-domains`. It reads its list from root-only `/run/kernel-firewall/`.
+  node can't start a second one (re-runs exit at the lock) or change its names,
+  so the policy is still the set of names chosen at boot. A brand-new address can
+  be rejected for up to one interval before it's added.
+  - **TCP lookups.** Agent code runs while the refresher does, and it could race
+    a UDP answer with a forged one. So `dig +tcp`, and boot allows TCP port 53
+    only to the container's own `/etc/resolv.conf` nameservers.
+  - **Public addresses only.** Boot and the refresher both drop answers in
+    private, loopback, link-local (including the `169.254.169.254` metadata
+    service), CGNAT, test, benchmark, multicast or reserved space
+    (`firewall-lib.sh`). Domain lines must be plain hostnames.
+  - **Add-only, capped at 512 additions,** with no TTL expiry. A long-running
+    container that follows a large CDN pool can hit the cap. New addresses are
+    then no longer followed until the container restarts.
+  - **Visible.** Start-up, reaching the cap, and a domain returning no answers
+    5 passes in a row go to the container console (`docker logs`) when the
+    firewall was started by the container's own entrypoint (descends from PID
+    1). When it was started through `docker exec` (a devcontainer
+    `postStartCommand`), the refresher doesn't hold that exec's output open,
+    so events go only to the log. Every addition goes to the root-only
+    `/run/kernel-firewall/refresh.log`.
+  - **Can't break a boot.** If its state dir can't be prepared, boot warns and
+    continues with addresses fixed at boot.
 - **Module names are validated** (`[a-z0-9-]`), so a name can't traverse to a file
   the caller wrote.
 - **Allowed domains are still exfiltration channels** with an attacker's own

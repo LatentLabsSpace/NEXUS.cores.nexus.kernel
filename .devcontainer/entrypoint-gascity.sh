@@ -98,6 +98,94 @@ if ! gc import install; then
        "the real error if the import cache is genuinely missing" >&2
 fi
 
+# --- Claude CLI first-run seed ---
+# gc drives each agent session as an interactive `claude` in tmux. On a fresh
+# ~/.claude.json the CLI opens first-run prompts before the session can work:
+# the workspace trust dialog (whose default is "No, exit") and the
+# custom-API-key approval. gc's startup nudge presses Enter on the default, so
+# every session dies at the prompt and gc respawns it, about every 70s.
+# ~/.claude.json lives in the container filesystem, not the city volume, so a
+# hand-made seed survives a restart but not a recreate. That is how the city
+# was dark from 2026-09-25 to 10-03, creating ~3.6k session wisps a day.
+# Seeding here on every boot makes a recreate safe.
+#
+# Trust is inherited: the CLI accepts a session whose directory (or an
+# ancestor, up to its git root) has projects.<dir>.hasTrustDialogAccepted.
+# Seeding the city and the workspace therefore covers the agent workdirs
+# under $CITY_DIR/.gc/agents/ and the rig. Agent dirs that already exist are
+# seeded too, and GC_CLAUDE_TRUST_DIRS (colon-separated) adds more. The pinned
+# CLAUDE_CODE_VERSION (Dockerfile.base) keeps this config schema stable.
+#
+# The merge keeps every existing key, never overrides a key the operator
+# rejected, and only writes when something changed. It soft-fails: a city
+# that boots with a warning is easier to see and fix than one that won't boot.
+seed_claude_first_run() {
+  local claude_json="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
+  local dirs=("$CITY_DIR")
+  [ -d "$WORKSPACE" ] && dirs+=("$WORKSPACE")
+  local d
+  for d in "$CITY_DIR"/.gc/agents/*/; do
+    [ -d "$d" ] && dirs+=("${d%/}")
+  done
+  if [ -n "${GC_CLAUDE_TRUST_DIRS:-}" ]; then
+    local extra
+    IFS=: read -r -a extra <<< "$GC_CLAUDE_TRUST_DIRS"
+    dirs+=("${extra[@]}")
+  fi
+  # The API key reaches node through the environment only, never argv.
+  node - "$claude_json" "${dirs[@]}" <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const [file, ...dirs] = process.argv.slice(2);
+let cfg = {};
+try {
+  cfg = JSON.parse(fs.readFileSync(file, "utf8"));
+} catch (err) {
+  if (err.code !== "ENOENT") {
+    console.error(`WARN: ${file} is unreadable (${err.message}); not seeding it`);
+    process.exit(0);
+  }
+}
+let changes = 0;
+cfg.projects = cfg.projects || {};
+for (const dir of dirs.filter(Boolean)) {
+  const key = path.resolve(dir);
+  const project = (cfg.projects[key] = cfg.projects[key] || {});
+  if (project.hasTrustDialogAccepted !== true) {
+    project.hasTrustDialogAccepted = true;
+    changes++;
+  }
+}
+if (cfg.hasCompletedOnboarding !== true) {
+  cfg.hasCompletedOnboarding = true;
+  changes++;
+}
+// The CLI records an approved ANTHROPIC_API_KEY by its last 20 characters.
+// GASCITY_SEED_APPROVE_API_KEY=false skips this (the prompt then appears).
+const apiKey = process.env.ANTHROPIC_API_KEY;
+if (apiKey && process.env.GASCITY_SEED_APPROVE_API_KEY !== "false") {
+  const responses = (cfg.customApiKeyResponses = cfg.customApiKeyResponses || {});
+  responses.approved = responses.approved || [];
+  responses.rejected = responses.rejected || [];
+  const tail = apiKey.slice(-20);
+  if (!responses.approved.includes(tail) && !responses.rejected.includes(tail)) {
+    responses.approved.push(tail);
+    changes++;
+  }
+}
+if (changes > 0) {
+  const tmp = `${file}.seed-tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+console.log(`claude first-run seed: ${dirs.length} trusted dir(s), ${changes} change(s)`);
+NODE
+}
+if ! seed_claude_first_run; then
+  echo "WARN: claude first-run seed failed; agent sessions may stop at the" \
+       "trust dialog" >&2
+fi
+
 # --- Run the city ---
 # Foreground per-city controller as the container process — the same shape as
 # the fork's own container images (contrib/k8s/Dockerfile.controller). The

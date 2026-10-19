@@ -6,5 +6,5 @@
 ## Folders
 | Name | Description |
 |------|-------------|
-| `_required/` | Universal hard-required allowlists — always loaded; a DNS miss aborts the boot |
-| `_optional/` | Universal optional allowlists — always loaded; a DNS miss warns and continues |
+| `_optional/` | Universal optional firewall allowlists — selected per module by FIREWALL_KERNEL_MODULES (default: all); a DNS resolution failure only logs a warning and continues |
+| `_required/` | Universal hard-required firewall allowlists — hard-fail on a DNS miss when selected; selected via FIREWALL_KERNEL_MODULES (default: all); a DNS resolution failure here aborts the container boot |
