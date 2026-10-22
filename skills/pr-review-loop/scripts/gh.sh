@@ -17,7 +17,10 @@
 #        b. .env/$AGENT_NAME.env            per-agent file, if AGENT_NAME is set
 #        c. the secrets skill's default     (.env + process environment)
 #   2. Otherwise plain `gh` — it uses GH_TOKEN/GITHUB_TOKEN from the
-#      environment or its own stored login. Never echo the token yourself.
+#      environment or its own stored login. That includes a repo whose
+#      secrets skill has no GH_TOKEN, unless GH_SECRETS_ENV_FILE or
+#      AGENT_NAME is set (then it fails closed, even when AGENT_NAME has no
+#      file of its own). Never echo the token yourself.
 #
 # The repo is located from the working directory, not from this script's path:
 # when the skill ships inside a plugin, this file runs from a plugin cache
@@ -40,6 +43,15 @@ if [[ -z "$env_file" && -n "${AGENT_NAME:-}" && -f "$ROOT/.env/${AGENT_NAME}.env
 fi
 
 cd "$ROOT"
+
+# No identity asked for and the secrets skill has no GH_TOKEN (a host whose gh
+# is logged in on its own): use plain gh and its stored login. A set
+# GH_SECRETS_ENV_FILE or AGENT_NAME is an explicit identity and never falls
+# back, so an agent missing its own token fails closed instead of borrowing
+# the host's login.
+if [[ -z "$env_file" && -z "${AGENT_NAME:-}" ]] && ! bash "$SECRETS" get --key GH_TOKEN >/dev/null 2>&1; then
+  exec gh "$@"
+fi
 
 run_secrets() {
   if [[ -n "$env_file" ]]; then

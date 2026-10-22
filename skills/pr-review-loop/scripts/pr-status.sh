@@ -21,6 +21,7 @@
 #
 #   <pr>        PR number or URL. If omitted, detected from the current branch.
 #   --roles     Roles that must review this PR even if none has yet (merged with
+#               this repo's entry in $PR_REVIEW_ROLES_BY_REPO,
 #               $PR_REVIEW_REQUIRED_ROLES, the base branch's required
 #               review/<role> checks, every role that has already reviewed the
 #               PR, and every role holding a live claim).
@@ -28,11 +29,24 @@
 #               the current head with no review in progress (or --timeout
 #               elapses). The loop runs in this script (sleep + API re-fetch):
 #               it costs GitHub API calls, not model turns.
-#   --timeout   Max seconds to wait (default 3600 — reviewers run on a schedule,
-#               so allow at least one sweep interval).
-#   --poll      Seconds between polls (default 30).
+#   --timeout   Max seconds to wait (default $PR_REVIEW_WAIT_TIMEOUT, else
+#               10800 — reviewers run on a schedule, so allow at least one
+#               sweep interval plus a review's own run time).
+#   --poll      Base seconds between polls (default 30). Long waits back off:
+#               2x after 5 minutes, 4x after 15 (shared author API budget).
+#   --settle    With --wait: once everything looks settled, re-check after this
+#               many seconds and keep waiting if a role claimed meanwhile
+#               (default $PR_REVIEW_SETTLE_SEC, else 180; 0 disables). Roles
+#               land one after another, so "settled" can be a gap between them.
 #
 # Environment:
+#   PR_REVIEW_ROLES_BY_REPO  Which roles review which repos, so a fresh PR that
+#                   no role has reviewed yet still waits for its reviewer
+#                   instead of reading as "none":
+#                   "owner/repo=role,role;owner/repo=role" (repo match ignores
+#                   case). Repos not listed expect no role by default.
+#   PR_REVIEW_WAIT_TIMEOUT   Default --timeout in seconds.
+#   PR_REVIEW_SETTLE_SEC     Default --settle in seconds.
 #   REVIEW_BOT_RE   Anchored regex of logins whose INLINE threads count as bot
 #                   findings rather than human ones
 #                   (default: ^(github-actions|claude)(\[bot\])?$).
@@ -66,8 +80,11 @@ PREFIX="${PR_REVIEWER_STATUS_PREFIX:-review/}"
 PR_ARG=""
 ROLES=""
 WAIT=0
-TIMEOUT=3600
+TIMEOUT="${PR_REVIEW_WAIT_TIMEOUT:-10800}"
+[[ "$TIMEOUT" =~ ^[0-9]+$ ]] || { echo "pr-status.sh: PR_REVIEW_WAIT_TIMEOUT must be an integer, got '$TIMEOUT'" >&2; exit 2; }
 POLL=30
+SETTLE="${PR_REVIEW_SETTLE_SEC:-180}"
+[[ "$SETTLE" =~ ^[0-9]+$ ]] || { echo "pr-status.sh: PR_REVIEW_SETTLE_SEC must be an integer, got '$SETTLE'" >&2; exit 2; }
 
 die() {
   echo "pr-status.sh: $*" >&2
@@ -86,6 +103,7 @@ while [[ $# -gt 0 ]]; do
     --roles) [[ $# -ge 2 ]] || die "--roles requires a comma-separated list"; ROLES="$2"; shift 2 ;;
     --timeout) TIMEOUT="$(int_arg --timeout "${2:-}" 0)"; shift 2 ;;
     --poll) POLL="$(int_arg --poll "${2:-}" 1)"; shift 2 ;;
+    --settle) SETTLE="$(int_arg --settle "${2:-}" 0)"; shift 2 ;;
     -*) die "unknown flag $1" ;;
     *) PR_ARG="$1"; shift ;;
   esac
@@ -96,14 +114,36 @@ done
 # the canonical PR URL on the base repo even when the argument pointed at a
 # fork, so owner/name come from it rather than from the local checkout.
 if [[ -z "$PR_ARG" ]]; then
-  pr_json="$(bash "$GH" pr view --json number,url)"
+  pr_json="$(bash "$GH" pr view --json number,url,isDraft)"
 else
-  pr_json="$(bash "$GH" pr view "$PR_ARG" --json number,url)"
+  pr_json="$(bash "$GH" pr view "$PR_ARG" --json number,url,isDraft)"
 fi
 PR="$(jq -r '.number' <<<"$pr_json")"
 pr_url="$(jq -r '.url' <<<"$pr_json")"
 OWNER="$(awk -F/ '{print $4}' <<<"$pr_url")"
 REPO="$(awk -F/ '{print $5}' <<<"$pr_url")"
+DRAFT="$(jq -r '.isDraft // false' <<<"$pr_json")"
+
+# This repo's configured reviewer roles join the expected set.
+repo_roles() { # owner/repo → roles from PR_REVIEW_ROLES_BY_REPO, or nothing
+  local want entry key entries
+  want="$(tr '[:upper:]' '[:lower:]' <<<"$1")"
+  IFS=';' read -ra entries <<<"${PR_REVIEW_ROLES_BY_REPO:-}"
+  for entry in "${entries[@]}"; do
+    entry="$(tr -d '[:space:]' <<<"$entry")"
+    [[ "$entry" == *=* ]] || continue
+    key="$(tr '[:upper:]' '[:lower:]' <<<"${entry%%=*}")"
+    [[ "$key" == "$want" ]] && printf '%s' "${entry#*=}" && return 0
+  done
+  return 0
+}
+# Reviewers skip drafts (pr-reviewer scans without --include-drafts), so a
+# draft expects no configured role: waiting on one would only time out.
+CONFIGURED_ROLES=""
+[[ "$DRAFT" == "true" ]] || CONFIGURED_ROLES="$(repo_roles "$OWNER/$REPO")"
+if [[ -n "$CONFIGURED_ROLES" ]]; then
+  ROLES="${ROLES:+$ROLES,}$CONFIGURED_ROLES"
+fi
 
 read -r -d '' QUERY <<'GRAPHQL' || true
 query($owner:String!,$repo:String!,$pr:Int!){
@@ -207,16 +247,38 @@ if jq -e '.errors | length > 0' <<<"$raw" >/dev/null 2>&1; then
   jq -r '.errors | map(.message) | unique | .[] | "pr-status.sh: GraphQL warning: " + .' <<<"$raw" >&2
 fi
 
+pending() { ci_pending "$raw" || reviews_pending "$reviews"; }
+
 WAIT_ELAPSED=0
 WAIT_TIMED_OUT=false
 if [[ "$WAIT" -eq 1 ]]; then
-  while { ci_pending "$raw" || reviews_pending "$reviews"; } && (( WAIT_ELAPSED < TIMEOUT )); do
-    sleep "$POLL"
-    WAIT_ELAPSED=$(( WAIT_ELAPSED + POLL ))
+  while :; do
+    while pending && (( WAIT_ELAPSED < TIMEOUT )); do
+      # Back off on long waits: every waiting session polls as the same author
+      # account and shares its hourly API budget. Base interval for 5 min,
+      # double to 15 min, then 4x (30s base: 30s, 60s, 120s).
+      step="$POLL"
+      (( WAIT_ELAPSED >= 300 )) && step=$(( POLL * 2 ))
+      (( WAIT_ELAPSED >= 900 )) && step=$(( POLL * 4 ))
+      sleep "$step"
+      WAIT_ELAPSED=$(( WAIT_ELAPSED + step ))
+      raw="$(fetch_graphql)"
+      reviews="$(fetch_reviews)"
+    done
+    # Settled, or out of time. A reviewer posts its roles one after another,
+    # and a later role (spec, aggregate) can claim a minute or two after the
+    # first review lands — seen live on NEXUS#156. Hold the settled state for
+    # SETTLE seconds before believing it; if a role claimed meanwhile, wait on.
+    if (( SETTLE == 0 || WAIT_ELAPSED >= TIMEOUT )) || pending; then
+      break
+    fi
+    sleep "$SETTLE"
+    WAIT_ELAPSED=$(( WAIT_ELAPSED + SETTLE ))
     raw="$(fetch_graphql)"
     reviews="$(fetch_reviews)"
+    pending || break
   done
-  if ci_pending "$raw" || reviews_pending "$reviews"; then
+  if pending; then
     WAIT_TIMED_OUT=true
   fi
 fi
@@ -255,6 +317,7 @@ cat > "$jq_filter" <<'JQ_FILTER'
   | ($reviews.verdict // "unread") as $rv
   | {
       number: ($pr.number // null),
+      draft: $draft,
       head_sha: ($pr.headRefOid // null),
       head_committed_at: ($pr.commits.nodes[0].commit.committedDate // null),
       mergeable: ($pr.mergeable // null),
@@ -289,6 +352,7 @@ jq -f "$jq_filter" \
    --argjson reviews "$reviews" \
    --argjson wait_elapsed "$WAIT_ELAPSED" \
    --argjson wait_timed_out "$WAIT_TIMED_OUT" \
+   --argjson draft "$DRAFT" \
    <<<"$raw" \
    2>/dev/null || {
      echo "pr-status.sh: jq processing failed — outputting error snapshot" >&2

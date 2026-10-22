@@ -5,8 +5,9 @@ description: 'Drive an open pull request to green automatically from the author'
   review it (general, security, ops, spec, and the aggregate that merges them),
   fix the blockers locally, commit and push, then wait for every expected role to
   re-review the new head — repeating until CI is green and the reviews raise no
-  blockers, or something needs a human. Smaller nit-level findings are deferred and
-  aggregated into a ledger on the PR instead of being churned through the loop. Use
+  blockers, or something needs a human. Small, clear nits are fixed in rounds that
+  push anyway; a round with only nits never pushes, and whatever is left goes into
+  a ledger on the PR instead of being churned through the loop. Use
   this whenever the user asks to "resolve PR comments", "fix the review", "address
   review feedback", "get this PR green", "make CI pass", "handle the review on PR
   #N", "babysit my PR", or points you at a pull request that has review findings or
@@ -49,6 +50,14 @@ A push leaves the new head unreviewed; the reviewers' next sweep picks it up on
 its own. **You never request a review** — you wait for one. The protocol is in
 `../pr-reviewer/references/protocol.md`.
 
+**How the loop starts.** Where reviewer roles cover a repo, the deployment says
+so in `PR_REVIEW_ROLES_BY_REPO` (`owner/repo=role,role;…`, typically in the
+project's `.claude/settings.json` `env`). The kernel plugin's `PostToolUse` hook
+watches for `gh pr create` in a covered repo and tells the session to start this
+loop on the new PR, so the author session — which knows why it made each change —
+handles its own reviews without the human relaying them. If you're told to start
+and you're already running the loop for that PR, don't start a second one.
+
 The bundled scripts handle the GitHub plumbing so you can focus on the part
 that needs intelligence: **understanding each finding and writing a correct
 fix.** Don't paper over problems to make the loop terminate — a green PR full
@@ -62,27 +71,45 @@ S=${CLAUDE_SKILL_DIR}/scripts
 
 ## Blockers vs nits — the default triage policy
 
-By default the loop **fixes only blockers**. Everything smaller is deferred:
-recorded in a running ledger, left untouched, and posted as one aggregated
-comment at the end. This keeps rounds short and avoids burning review and CI
-cycles on cosmetics.
+What costs a round is a **push**: every new head sends every role back to
+re-review it, which means a full reviewer pass and up to one sweep interval of
+waiting. So the policy turns on whether this round pushes anyway, not on
+whether a finding is small:
+
+- **A round that pushes anyway** (it has blockers, or CI is red): fix the
+  blockers, **and** every nit that is small, clearly right and inside this
+  PR's scope, in the same push. The re-review is already paid for.
+- **A round with only nits left:** don't push just for them. That would buy a
+  whole extra review cycle for cosmetics. Ledger them and finish.
+- **Never fix along:** a nit that is a judgment call, grows the PR's scope, or
+  is a refactor that could introduce new findings. Ledger it with the reason.
 
 The reviewers already sort findings: anything under a review's
 "Medium (blocker)" section counts toward `blockers` in its trailer, everything
 under "Low / nits" toward `nits`. Take their classification as the starting
-point, then apply judgment:
+point, then **read every nit and re-classify it yourself**:
 
 - **Blocker** — fix it this round: correctness bugs, broken or missing error
   handling, security issues, data loss/corruption risks, race conditions,
-  breaking API/contract changes, anything that makes CI fail.
-- **Nit** — defer it: style and naming, comment/docstring wording, optional
-  refactors, micro-optimizations, test-coverage suggestions for working code.
+  breaking API/contract changes, anything that makes CI fail. A "nit" that
+  describes one of these is a blocker, whatever the reviewer called it — on
+  NEXUS#156 a nit about expected roles was a real early-"ready" bug.
+- **Nit** — style and naming, comment/docstring wording, optional refactors,
+  micro-optimizations, test-coverage suggestions for working code.
 
 When a finding is genuinely ambiguous, treat it as a blocker — over-deferring
-real bugs is the worse failure mode. Keep the ledger as you go (role, path:line,
-one-line summary, review URL) and **dedupe across rounds and roles**: each
-re-review may restate an unfixed nit, and two roles may flag the same line.
-Record it once.
+real bugs is the worse failure mode.
+
+**The ledger** is the record of every finding you didn't simply fix in the
+code: one PR comment (format under Termination), one entry per finding (role,
+path:line, one-line summary, review URL), each ending with its **status**.
+Nits you fixed along stay in it, marked **fixed in `<sha>`**, so the merger
+and the next re-review can see they were handled. Nothing deferred may live
+only in the ledger: a ledger is a comment, and nobody reads it after the merge.
+So every deferred finding becomes a work item (a bead) or an explicit
+decision.
+**Dedupe across rounds and roles**: each re-review may restate an unfixed
+nit, and two roles may flag the same line. Record it once.
 
 If the user asks for everything to be fixed ("fix the nits too", "address all
 comments"), promote nits to blockers and skip the ledger.
@@ -123,6 +150,28 @@ Getting this wrong means a force-push to fix authorship later.
 Track the steps with a todo list so a long loop stays legible, and keep the
 deferred-nits ledger updated every round.
 
+### 0. Claim the PR (once, before anything else)
+
+```bash
+bash $S/pr-owner.sh "<pr>"
+```
+
+Several sessions can push as the same GitHub account, so one PR can look like
+"yours" to two of them, for example after "run the loop on any PRs you have".
+Two loops on one PR post duplicate ledgers and push competing fixes. The script
+records this session (`CLAUDE_CODE_SESSION_ID`) in a hidden marker in the PR
+body:
+
+- `claimed` / `owned` → carry on.
+- `unenforced` → no session id here (headless or fleet run). Carry on.
+- **exit 3, `owned-by <session>`** → another session owns this PR. **Stop.**
+  Tell the user which session owns it, and don't touch the PR. Only when the
+  user explicitly says to take it over, run it again with `--take-over`.
+
+Run it again at the start of **every** round, before you push. It's one API
+call, and it's how a session that lost a simultaneous claim (or was taken over
+by the user's word) finds out before it pushes a competing fix.
+
 ### 1. Assess
 
 ```bash
@@ -138,7 +187,7 @@ threads split into `bot_threads_unresolved` / `human_threads_unresolved`,
 
 | field | meaning |
 |---|---|
-| `expected` | roles that must review this head: `--roles` / `$PR_REVIEW_REQUIRED_ROLES`, the base branch's required `review/<role>` checks, every role that has reviewed this PR before, and every role mid-review |
+| `expected` | roles that must review this head: `--roles`, this repo's `$PR_REVIEW_ROLES_BY_REPO` entry, `$PR_REVIEW_REQUIRED_ROLES`, the base branch's required `review/<role>` checks, every role that has reviewed this PR before, and every role mid-review |
 | `missing` | expected roles with no review covering the current head |
 | `in_progress` | roles holding a live claim — a verdict is coming |
 | `roles.<role>` | per role: `verdict` (blockers/nits/clean/unread), `counts`, `url`, `review_id`, `covers_head`, `commit_status`, `status_mismatch` |
@@ -157,8 +206,10 @@ How to act on `review_verdict`:
   With a current aggregate, work from it — but note its **Disputed** section:
   a role's blocker the aggregate thinks is wrong still holds that role's
   `review/<role>` check red. Either fix it, or reply to that role (step 2).
-- `nits` → read the reviews, ledger the nits, don't churn. If CI is green and
-  no human threads remain, that's a default-mode finish (see Termination).
+- `nits` → read the reviews and re-classify each nit (a disguised blocker
+  goes to step 2). If none is a blocker, this is a nits-only round: ledger
+  them and don't push. If CI is green and no human threads remain, that's a
+  default-mode finish (see Termination).
 - `clean` → every expected role reviewed this head with no findings.
 - `incomplete` → a role hasn't reviewed this head yet. Don't declare anything
   about this head's findings; wait (step 5). If `reviews.stale_read` lists
@@ -172,6 +223,10 @@ How to act on `review_verdict`:
   without the marker: read and work those findings, and name them in the
   escalation. Escalate (ask which roles should review, or whether the
   user waives review), unless the user already told you the PR needs no review.
+  **Except on a draft** (`draft: true`): reviewers skip drafts, so `none` is
+  expected there. Don't wait and don't escalate. Finish with "draft, not
+  reviewed: mark it ready for review when you want the reviewers", and never
+  mark it ready yourself unless the user asks.
 
 Also:
 
@@ -208,7 +263,9 @@ clean tree. For each **blocker**, write a real fix:
 - **Failing test** → fix the code or the test, whichever is actually wrong.
 - **Lint/format/type check** → apply the fix the tool wants.
 
-Leave nits alone — no code change. They live in the ledger.
+Since this round pushes, fix along every nit that is small, clearly right and
+in scope, in the same commit, and mark it **fixed in `<sha>`** in the ledger.
+Ledger the rest with the reason (judgment call, scope, risky refactor).
 
 Validate before pushing — run the relevant test/lint/build locally so you don't
 burn a CI round on a typo. Keep each fix minimal and on-point; don't refactor
@@ -259,23 +316,41 @@ new head records what was fixed under "Prior findings".
 
 ### 5. Wait for the re-review, then repeat
 
+Start the wait as a **background** command (the Bash tool's
+`run_in_background: true`), never in the foreground:
+
 ```bash
-bash $S/pr-status.sh "<pr>" --wait          # default timeout 3600s, poll 30s
+bash $S/pr-status.sh "<pr>" --wait          # timeout $PR_REVIEW_WAIT_TIMEOUT, else 3h; poll 30s
 ```
 
-This blocks until CI has settled **and** every expected role has reviewed the
-current head with none mid-review — then prints the settled status. Run it
-once, in the foreground, with a generous tool timeout. The poll loop lives
-inside the script (sleep + API re-fetch), so waiting costs GitHub API calls,
-not model turns. Reviewers run on a schedule, so a re-review can take one sweep
-interval; size `--timeout` to that.
+It blocks until CI has settled **and** every expected role has reviewed the
+current head with none mid-review — then prints the settled status. The poll
+loop lives inside the script (sleep + API re-fetch), so waiting costs GitHub
+API calls, not model turns. Run in the background, the harness re-invokes you
+when it exits: end your turn, keep working on something else, or go idle — the
+review wakes you. (A foreground call hits the tool's 10-minute cap and is moved
+to the background anyway, without you having planned for it.) Reviewers run on
+a schedule, so the default timeout covers one sweep interval plus a review's own
+run time; don't shorten it. Keep exactly one wait per PR running. Polls back
+off on long waits (30s, then 60s after 5 minutes, then 120s after 15): every
+waiting session polls as the same author account and shares its hourly API
+budget.
+
+The configured roles are a **floor**: a reviewer adds `spec`, `security`,
+`ops` and `aggregate` on PRs that need them, and those count as expected only
+once they claim. Roles land one after another, so a moment where every
+expected role has posted can be a gap between two of them. `--wait` therefore
+re-checks after `--settle` seconds (default 180, `PR_REVIEW_SETTLE_SEC`)
+before returning, and keeps waiting if a role claimed in between.
+
+When it wakes you, read its output, then go on below.
 
 If `wait_timed_out: true`:
 - `reviews.missing` non-empty and `reviews.in_progress` empty → no reviewer
   picked up the new head. Escalate: the reviewer sweep isn't running or isn't
   covering this repo/role. Don't trigger anything yourself.
-- `reviews.in_progress` non-empty → a review is still running; wait once more,
-  then escalate.
+- `reviews.in_progress` non-empty → a review is still running; start one more
+  background wait, then escalate if that one times out too.
 - `checks.pending` non-empty or `truncated.checks: true` → CI didn't settle or
   couldn't be proven settled. Escalate rather than calling it green.
 
@@ -313,14 +388,40 @@ is true, `reviews.in_progress` is empty, and `review_verdict` ∈ {`clean`,
 ledger to the PR, then echo it in the conversation.** Conversation output is
 lost when the session ends; the ledger must live where the merger sees it:
 
-1. **Post or update a single canonical ledger comment.** Begin its body with
-   the marker line `<!-- pr-review-loop:deferred-ledger -->`. Search the PR's
-   comments for it; if found, update in place
-   (`bash $S/gh.sh api -X PATCH "repos/{owner}/{repo}/issues/comments/<id>" -f body=...`),
-   else post a new one.
-2. **One aggregated block:** `role · path:line — summary (review URL) —
-   recommendation` (apply / skip / follow-up PR / **fixed in <sha>**) per entry,
-   deduped across rounds and roles. Mark items you fixed as fixed rather than
+1. **Post or update the single canonical ledger comment with the script:**
+   write the body to a file whose first line is the marker
+   `<!-- pr-review-loop:deferred-ledger -->`, then
+   `bash $S/pr-ledger.sh "<pr>" <body-file>`. It updates the existing ledger
+   in place or posts one, and if two loops raced and more than one ledger
+   exists, it keeps the oldest and deletes the rest. Don't hand-roll
+   search-then-post: two loops doing that at the same moment both post.
+2. **One aggregated block:** one bullet (`- `) per entry, `role · path:line —
+   summary (review URL) — <status>`. Only bullets are entries: a deferred
+   item written as prose or a numbered list is invisible to the validator and
+   the harvester, so it is never filed. Every entry ends with exactly one
+   status in bold, as the last thing on the line; `pr-ledger.sh` refuses a
+   ledger with an entry that has none:
+
+   | Status | When |
+   |---|---|
+   | `**fixed in <sha>**` | fixed in this PR |
+   | `**done**` | handled without a code change (a PR-body edit, a retitle) |
+   | `**decided …**` | the human ruled, e.g. `**decided by the TD: no**` |
+   | `**skip: <reason>**` | deliberately not acted on, with the reason |
+   | `**verified …**` | the finding was checked and needs no change |
+   | `**bead <id>**` | deferred and filed as a work item |
+   | `**follow-up**` | deferred, but you can't file it here; the merged-PR harvester files it |
+
+   **File deferred findings now.** When `PR_REVIEW_BD` is set (the cell's way
+   to reach `bd`; with `PR_REVIEW_FOLLOWUP_ROOT_BY_REPO` and optionally
+   `PR_REVIEW_FOLLOWUP_ROOT_BY_PATH` naming the roadmap roots), run
+   `python3 $S/pr-followup.py --pr <url> --entry "<entry line>"` for each one
+   and tag it `**bead <id>**`. It files the bead under the root's "Review
+   follow-ups" milestone, creating that once. Otherwise tag it `**follow-up**`.
+   Either way the merger sees what's still open, and the harvester
+   (`pr-ledger-harvest.py`, run on a schedule) files any `**follow-up**` left
+   on a merged PR, so nothing deferred is lost. Keep the block deduped
+   across rounds and roles. Mark items you fixed as fixed rather than
    deleting them. If the ledger is empty, say so explicitly.
 3. Echo the same ledger in your final report.
 
@@ -356,6 +457,14 @@ When you escalate, give the user a tight summary: what's still red, what you
 tried, the specific finding/check text, your recommended next step — and the
 nit ledger so far. Leave the PR in a clean, pushed state.
 
+**Tell the human, don't make them find you.** The loop usually runs in a
+session nobody is watching. On every termination — an escalation, or a
+success that leaves the PR ready for the human's merge — send one push
+notification if a notification tool is available (Claude Code:
+`PushNotification`): `<owner/repo>#<n>: <ready to merge | needs you: one-line
+reason>`. One per termination, never per round. The full summary stays in the
+conversation and the ledger on the PR; the notification only says where to look.
+
 ## Safety rules
 
 - **Secrets:** all `gh` access via `gh.sh`; never read `.env`; never print tokens.
@@ -379,6 +488,12 @@ nit ledger so far. Leave the PR in a clean, pushed state.
 |--------|---------|
 | `scripts/gh.sh` | Run any `gh` command with `GH_TOKEN` injected via the repo's /secrets skill (else plain `gh`). Shared with pr-reviewer. |
 | `scripts/pr-status.sh` | One-shot (or `--wait`) JSON snapshot: CI checks (excluding `review/*`), inline threads split bot/human, the per-role review state from `reviewer.py reviews`, mergeability, `ready`. |
+| `scripts/pr-owner.sh` | Claim the PR for this session via a hidden PR-body marker (`CLAUDE_CODE_SESSION_ID`); exit 3 when another session owns it; `--take-over` only on the user's word. |
+| `scripts/pr-ledger.sh` | Post or update the single deferred-nits ledger comment; refuses an entry without a status; dedupes if two loops raced (keeps the oldest). |
+| `scripts/ledger_status.py` | The ledger grammar (entries, statuses, paths), shared by the scripts below. |
+| `scripts/pr-followup.py` | File one deferred entry as a bead under the owning roadmap's "Review follow-ups" milestone; prints the id. |
+| `scripts/pr-ledger-harvest.py` | Sweep merged PRs' ledgers since a date: report open entries, or with `--file` file them and tag the ledger in place. No model calls. |
+| `scripts/tests/test_ledger.py` | Tests for the ledger scripts and `gh.sh`, no network: `python3 scripts/tests/test_ledger.py`. |
 | `scripts/pr-resolve.sh` | Resolve review-bot inline threads (GraphQL) by explicit id, or `--all`. Never touches human threads, never requests reviews. |
 | `../pr-reviewer/scripts/reviewer.py reviews <owner/repo#N>` | The per-role review state on its own (what `pr-status.sh` embeds as `reviews`). |
 
