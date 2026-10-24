@@ -41,11 +41,26 @@ else
     echo "No Docker DNS rules to restore"
 fi
 
-# First allow DNS and localhost before any restrictions
-# Allow outbound DNS
-iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
-# Allow inbound DNS responses
-iptables -A INPUT -p udp --sport 53 -j ACCEPT
+# First allow DNS and localhost before any restrictions.
+# DNS goes only to this container's own resolvers (/etc/resolv.conf), UDP and
+# TCP alike: an open UDP/53 rule would let any process tunnel data to any
+# address on port 53. On compose networks the resolver is Docker's 127.0.0.11
+# (reached over lo, NAT-ed by Docker to the daemon's listener); on the default
+# bridge it is whatever the host put in resolv.conf.
+_resolvers=()
+while IFS=$' \t' read -r _kw _ns _rest; do
+    if [ "$_kw" = nameserver ] && [[ "$_ns" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+        _resolvers+=("$_ns")
+    fi
+done < /etc/resolv.conf
+if [ "${#_resolvers[@]}" -eq 0 ]; then
+    echo "WARN: no IPv4 nameserver in /etc/resolv.conf; DNS will only work over lo"
+fi
+for _ns in "${_resolvers[@]}"; do
+    iptables -A OUTPUT -p udp -d "$_ns" --dport 53 -j ACCEPT
+    # Inbound DNS responses
+    iptables -A INPUT -p udp -s "$_ns" --sport 53 -j ACCEPT
+done
 # TCP DNS, only to this container's own resolvers. firewall-refresh queries
 # over TCP so agent code can't race it with forged UDP answers. (On compose
 # networks the resolver is 127.0.0.11, already reachable via lo.)
@@ -54,10 +69,17 @@ while IFS=$' \t' read -r _kw _ns _rest; do
         iptables -A OUTPUT -p tcp -d "$_ns" --dport 53 -j ACCEPT
     fi
 done < /etc/resolv.conf
-# Allow outbound SSH
-iptables -A OUTPUT -p tcp --dport 22 -j ACCEPT
-# Allow inbound SSH responses
-iptables -A INPUT -p tcp --sport 22 -m state --state ESTABLISHED -j ACCEPT
+# Allow outbound SSH to any host (git over SSH and the like). This is not an
+# allowlist: TCP/22 reaches the whole internet. A container that should only
+# reach its allowlisted domains sets FIREWALL_ALLOW_SSH=0 (git still works over
+# HTTPS to the github module).
+if [ "${FIREWALL_ALLOW_SSH:-1}" = "0" ]; then
+    echo "FIREWALL_ALLOW_SSH=0 — no outbound SSH"
+else
+    iptables -A OUTPUT -p tcp --dport 22 -j ACCEPT
+    # Allow inbound SSH responses
+    iptables -A INPUT -p tcp --sport 22 -m state --state ESTABLISHED -j ACCEPT
+fi
 # Allow localhost
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
@@ -305,9 +327,16 @@ fi
 HOST_NETWORK=$(echo "$HOST_IP" | sed "s/\.[0-9]*$/.0\/24/")
 echo "Host network detected as: $HOST_NETWORK"
 
-# Set up remaining iptables rules
-iptables -A INPUT -s "$HOST_NETWORK" -j ACCEPT
-iptables -A OUTPUT -d "$HOST_NETWORK" -j ACCEPT
+# Allow the gateway's /24: the Docker host and whatever else listens on that
+# network. A container that must not reach the host or its neighbours sets
+# FIREWALL_ALLOW_HOST_NETWORK=0 (with FIREWALL_ALLOW_LOCAL_NETWORKS=0, it then
+# reaches only its allowlisted domains and loopback).
+if [ "${FIREWALL_ALLOW_HOST_NETWORK:-1}" = "0" ]; then
+    echo "FIREWALL_ALLOW_HOST_NETWORK=0 — not allowing $HOST_NETWORK"
+else
+    iptables -A INPUT -s "$HOST_NETWORK" -j ACCEPT
+    iptables -A OUTPUT -d "$HOST_NETWORK" -j ACCEPT
+fi
 
 # --- Compose-network peers -------------------------------------------------
 # Sibling services (the beads server, a database, any compose service reached
@@ -373,6 +402,13 @@ iptables -P OUTPUT DROP
 # First allow established connections for already approved traffic
 iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+# FIREWALL_ALLOW_SSH=0 also covers the allowlisted IPs: the domain ipset below
+# accepts every port, so without this an allowlisted host (GitHub's, say)
+# would still take TCP/22.
+if [ "${FIREWALL_ALLOW_SSH:-1}" = "0" ]; then
+    iptables -A OUTPUT -p tcp --dport 22 -j REJECT --reject-with icmp-admin-prohibited
+fi
 
 # Then allow only specific outbound traffic to allowed domains
 iptables -A OUTPUT -m set --match-set allowed-domains dst -j ACCEPT

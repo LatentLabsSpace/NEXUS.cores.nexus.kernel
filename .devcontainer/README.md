@@ -330,6 +330,8 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 | `FIREWALL_MODULES` | `all` | The consumer's own top-level `firewall.d/*.conf` drop-ins: comma-separated names, `all`, or `none` |
 | `FIREWALL_KERNEL_MODULES` | `all` | Which kernel modules load, from **both** tiers: `all`, `none`, an allowlist (`github,npm,openai`), or all-minus (`all,-vscode,-anthropic-telemetry`). See [Firewall drop-ins](#firewall-drop-ins) |
 | `FIREWALL_ALLOW_LOCAL_NETWORKS` | `1` | `0` drops the container's own compose networks from the allowlist (breaks reaching sibling services) |
+| `FIREWALL_ALLOW_SSH` | `1` | `0` drops the outbound TCP/22 rule, which otherwise reaches any host. Git still works over HTTPS |
+| `FIREWALL_ALLOW_HOST_NETWORK` | `1` | `0` drops the gateway /24 rule (the Docker host and its neighbours). For a container that should reach only its allowlisted domains |
 | `FIREWALL_REFRESH_SECONDS` | `120` | How often `firewall-refresh` re-resolves the boot's domain list and adds rotated addresses; clamped to 30..3600, `0` disables (IPs fixed at boot) |
 
 ### `beads` service (`entrypoint-beads.sh`)
@@ -451,7 +453,8 @@ warn-and-skip. A consumer never needs to shadow a kernel conf to soften it.
   sudoers rule has no `SETENV`. With `SETENV`, caller-supplied variables skip sudo's
   scrubbing, and `BASH_ENV` ran arbitrary code as root inside the (bash) script.
   Only `FIREWALL_MODULES`, `FIREWALL_KERNEL_MODULES`,
-  `FIREWALL_ALLOW_LOCAL_NETWORKS` and `FIREWALL_REFRESH_SECONDS` pass through, via
+  `FIREWALL_ALLOW_LOCAL_NETWORKS`, `FIREWALL_ALLOW_SSH`, `FIREWALL_ALLOW_HOST_NETWORK` and
+  `FIREWALL_REFRESH_SECONDS` pass through, via
   `env_keep`; the last is validated and clamped, and only sets an interval. Call it with plain
   `sudo`: `sudo -E` / `--preserve-env` are rejected without `SETENV`.
 - **One-shot per container start.** Once a boot completes, the script creates a
@@ -531,6 +534,32 @@ host LAN and no internet, and grants nothing a same-`/24` peer didn't already
 have. It is always applied (not a tier: it's a link-layer fact, not a domain)
 and warns rather than aborting if the interface list can't be read. Set
 `FIREWALL_ALLOW_LOCAL_NETWORKS=0` to opt out.
+
+### Locking a service down to its allowlist
+
+For a service that reads untrusted content, set all three opt-outs:
+
+| Knob | Removes |
+|---|---|
+| `FIREWALL_ALLOW_LOCAL_NETWORKS=0` | its own compose networks (sibling services) |
+| `FIREWALL_ALLOW_HOST_NETWORK=0` | the gateway `/24`: the Docker host and its neighbours |
+| `FIREWALL_ALLOW_SSH=0` | outbound TCP/22, to any host **and** to allowlisted hosts (the domain ipset otherwise accepts every port) |
+
+DNS is always limited to the container's own resolvers from `/etc/resolv.conf` (UDP and TCP), so a process can't
+query, or tunnel through, an arbitrary DNS server.
+
+**What it still doesn't stop**, by design:
+
+- **Allowlisted domains accept every port except 22** (with `FIREWALL_ALLOW_SSH=0`). The allowlist is per address,
+  not per service.
+- **An allowlisted service can carry data out.** With `github` selected, a process can push to any GitHub repo or
+  create a gist with credentials it was given. Choose modules accordingly.
+- **The resolver forwards queries.** Lookups of attacker-controlled names still leave through it (low-bandwidth
+  DNS exfiltration). Closing that needs a filtering resolver.
+
+**Regression test:** `.devcontainer/tests/firewall-matrix.sh <kernel image> [drop-in dir]` runs `init-firewall.sh` in
+throwaway containers (default bridge and a user-defined network) and checks each path against the locked and default
+policies. Run it after any change to `init-firewall.sh`.
 
 ## Consumer smoke checklist
 

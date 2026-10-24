@@ -133,7 +133,7 @@ USER root
 RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/firewall-exec /usr/local/bin/firewall-refresh && \
   chmod 0644 /usr/local/bin/firewall-lib.sh && \
   printf '%s\n' \
-    'Defaults!/usr/local/bin/init-firewall.sh env_keep += "FIREWALL_MODULES FIREWALL_KERNEL_MODULES FIREWALL_ALLOW_LOCAL_NETWORKS FIREWALL_REFRESH_SECONDS"' \
+    'Defaults!/usr/local/bin/init-firewall.sh env_keep += "FIREWALL_MODULES FIREWALL_KERNEL_MODULES FIREWALL_ALLOW_LOCAL_NETWORKS FIREWALL_ALLOW_SSH FIREWALL_ALLOW_HOST_NETWORK FIREWALL_REFRESH_SECONDS"' \
     'node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh' \
     > /etc/sudoers.d/node-firewall && \
   chmod 0440 /etc/sudoers.d/node-firewall && \
