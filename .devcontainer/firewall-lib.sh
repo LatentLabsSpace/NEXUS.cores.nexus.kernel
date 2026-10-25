@@ -48,3 +48,99 @@ fw_public_ipv4() {
     (( a == 203 && b == 0 && c == 113 )) && return 1            # TEST-NET-3
     return 0
 }
+
+# --- Compose peers (FIREWALL_ALLOW_PEERS) ------------------------------------
+# A narrow exception for a container that runs with FIREWALL_ALLOW_LOCAL_NETWORKS=0
+# but must reach ONE sibling service: "ip:port@gateway[,...]". IPv4 literals only,
+# never names: a name resolves through Docker's DNS, which forwards unknown names
+# upstream, so a peer that is down could be answered by any resolver with, say,
+# a gateway address, and a container can't see a non-default network's gateway.
+# The peer's address is pinned in compose (ipv4_address on a network whose
+# subnet and gateway are pinned too), so it comes only from trusted config.
+# A container can't discover a non-default network's gateway (no route names it,
+# and compose can put it anywhere in the subnet), so the gateway is an explicit,
+# trusted input: "@gateway", the network's gateway as pinned in compose. An entry
+# without it is refused. Each peer must be private and inside one of this
+# container's OWN attached subnets, with the declared gateway in that same
+# subnet, and must not be the declared gateway, the default gateway, that
+# network's first host (Docker's default gateway), its network or broadcast
+# address, or this container's own address. One rule per peer: TCP to that port
+# only, in FW_PEERS. Anything else is skipped with a warning (fail closed).
+
+# fw_ip2int IP -> 32-bit integer
+fw_ip2int() {
+    local o1 o2 o3 o4
+    IFS=. read -r o1 o2 o3 o4 <<< "$1"
+    echo $(( (10#$o1 << 24) | (10#$o2 << 16) | (10#$o3 << 8) | 10#$o4 ))
+}
+
+# fw_valid_ipv4 IP: a dotted quad with octets <= 255
+fw_valid_ipv4() {
+    [[ "$1" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+    (( 10#${BASH_REMATCH[1]} <= 255 && 10#${BASH_REMATCH[2]} <= 255 \
+       && 10#${BASH_REMATCH[3]} <= 255 && 10#${BASH_REMATCH[4]} <= 255 ))
+}
+
+# fw_valid_peer IP:PORT@GATEWAY
+fw_valid_peer() {
+    local gw=${1##*@} rest=${1%@*} ip port
+    [ "$gw" != "$1" ] || return 1                    # gateway is required
+    ip=${rest%:*}; port=${rest##*:}
+    [ "$ip" != "$rest" ] || return 1
+    fw_valid_ipv4 "$ip" && fw_valid_ipv4 "$gw" || return 1
+    [[ "$port" =~ ^[0-9]{1,5}$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 ))
+}
+
+# fw_peer_ip_ok IP DECLARED_GW: private, inside an attached subnet that also
+# holds DECLARED_GW, not a gateway (declared or default), network, broadcast or
+# own address.
+fw_peer_ip_ok() {
+    local ip=$1 dgw=$2 cidr addr bits n_ip n_gw n_addr mask net gw
+    fw_public_ipv4 "$ip" && return 1                 # peers are private by definition
+    [ -n "$dgw" ] && [ "$ip" != "$dgw" ] || return 1 # never the declared gateway
+    n_ip=$(fw_ip2int "$ip"); n_gw=$(fw_ip2int "$dgw")
+    while read -r gw; do
+        [ -n "$gw" ] && [ "$gw" = "$ip" ] && return 1
+    done < <(ip -4 route show 2>/dev/null | awk '$1 == "default" {print $3}')
+    while read -r cidr; do
+        [[ "$cidr" =~ ^([0-9]{1,3}(\.[0-9]{1,3}){3})/([0-9]{1,2})$ ]] || continue
+        addr=${BASH_REMATCH[1]}; bits=${BASH_REMATCH[3]}
+        [ "$addr" = "$ip" ] && return 1              # this container itself
+        (( bits >= 8 && bits <= 30 )) || continue
+        n_addr=$(fw_ip2int "$addr")
+        mask=$(( (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF ))
+        net=$(( n_addr & mask ))
+        if (( (n_ip & mask) == net )); then
+            (( (n_gw & mask) == net )) || return 1                             # gateway on another network
+            (( n_ip == net || n_ip == net + 1 )) && return 1                    # network, first host
+            (( n_ip == (net | (~mask & 0xFFFFFFFF)) )) && return 1              # broadcast
+            return 0
+        fi
+    done < <(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}')
+    return 1
+}
+
+# fw_peers_apply "ip:port@gateway,..." [logfn]: rebuild FW_PEERS. One line per decision
+# through logfn (default: echo). Requires the FW_PEERS chain to exist.
+fw_peers_apply() {
+    local spec=$1 logfn=${2:-echo} entry ip port gw rest n=0
+    iptables -F FW_PEERS 2>/dev/null || return 1
+    [ -n "$spec" ] || return 0
+    IFS=, read -ra _fw_peer_entries <<< "$spec"
+    for entry in "${_fw_peer_entries[@]}"; do
+        entry=${entry//[[:space:]]/}
+        [ -n "$entry" ] || continue
+        if ! fw_valid_peer "$entry"; then
+            "$logfn" "WARN: peer '$entry' is not ipv4:port@gateway (names are not accepted, the gateway is required); skipped"
+            continue
+        fi
+        gw=${entry##*@}; rest=${entry%@*}
+        ip=${rest%:*}; port=$((10#${rest##*:}))
+        if fw_peer_ip_ok "$ip" "$gw"; then
+            iptables -A FW_PEERS -d "$ip" -p tcp --dport "$port" -j ACCEPT && n=$((n + 1))
+        else
+            "$logfn" "WARN: peer $ip (gateway $gw) is not a private address on one of this container's own networks with that gateway, or is a gateway, network, broadcast or own address; skipped"
+        fi
+    done
+    "$logfn" "peers: $n rule(s) for '${spec}'"
+}

@@ -332,6 +332,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 | `FIREWALL_ALLOW_LOCAL_NETWORKS` | `1` | `0` drops the container's own compose networks from the allowlist (breaks reaching sibling services) |
 | `FIREWALL_ALLOW_SSH` | `1` | `0` drops the outbound TCP/22 rule, which otherwise reaches any host. Git still works over HTTPS |
 | `FIREWALL_ALLOW_HOST_NETWORK` | `1` | `0` drops the gateway /24 rule (the Docker host and its neighbours). For a container that should reach only its allowlisted domains |
+| `FIREWALL_ALLOW_PEERS` | (empty) | `ip:port@gateway[,...]` (IPv4 literals of a pinned peer address and its network's pinned gateway, never names): with local networks off, still reach exactly these sibling services, TCP to that port only. See [Allowing one sibling service](#allowing-one-sibling-service) |
 | `FIREWALL_REFRESH_SECONDS` | `120` | How often `firewall-refresh` re-resolves the boot's domain list and adds rotated addresses; clamped to 30..3600, `0` disables (IPs fixed at boot) |
 
 ### `beads` service (`entrypoint-beads.sh`)
@@ -453,8 +454,8 @@ warn-and-skip. A consumer never needs to shadow a kernel conf to soften it.
   sudoers rule has no `SETENV`. With `SETENV`, caller-supplied variables skip sudo's
   scrubbing, and `BASH_ENV` ran arbitrary code as root inside the (bash) script.
   Only `FIREWALL_MODULES`, `FIREWALL_KERNEL_MODULES`,
-  `FIREWALL_ALLOW_LOCAL_NETWORKS`, `FIREWALL_ALLOW_SSH`, `FIREWALL_ALLOW_HOST_NETWORK` and
-  `FIREWALL_REFRESH_SECONDS` pass through, via
+  `FIREWALL_ALLOW_LOCAL_NETWORKS`, `FIREWALL_ALLOW_SSH`, `FIREWALL_ALLOW_HOST_NETWORK`,
+  `FIREWALL_ALLOW_PEERS` and `FIREWALL_REFRESH_SECONDS` pass through, via
   `env_keep`; the last is validated and clamped, and only sets an interval. Call it with plain
   `sudo`: `sudo -E` / `--preserve-env` are rejected without `SETENV`.
 - **One-shot per container start.** Once a boot completes, the script creates a
@@ -557,9 +558,48 @@ query, or tunnel through, an arbitrary DNS server.
 - **The resolver forwards queries.** Lookups of attacker-controlled names still leave through it (low-bandwidth
   DNS exfiltration). Closing that needs a filtering resolver.
 
+### Allowing one sibling service
+
+A locked-down service sometimes needs exactly one sibling: an agent that calls a sandboxed helper, or a service that
+needs only the beads server. A drop-in name can't express that: `fw_public_ipv4` deliberately drops private
+addresses that a name resolves to. And `FIREWALL_ALLOW_LOCAL_NETWORKS=1` opens every address on every attached
+network, the gateway included.
+
+`FIREWALL_ALLOW_PEERS="172.30.240.2:8080@172.30.240.1"` opens one peer and one port: the peer's address, the port,
+and the gateway of the network they share.
+
+- **IPv4 literals only, never names.** A name resolves through Docker's DNS, which forwards unknown names upstream.
+  So while the peer is down, any upstream resolver could answer, for example with a gateway address. And a container
+  can't see a non-default network's gateway. Pin the peer's address in compose instead: put it on a dedicated
+  network whose `ipam` subnet **and gateway** are pinned, and give the peer an `ipv4_address`. The address then comes
+  only from trusted config, and a recreated peer keeps it.
+- **The gateway is a required, trusted input.** A container can't discover a non-default network's gateway: no route
+  names it, and compose can put it anywhere in the subnet. So each entry declares it (`@gateway`, as pinned in
+  compose), and an entry without it is refused.
+- **Checks:** each peer must be private and inside the subnet of one of this container's **own attached networks**,
+  with the declared gateway in that same subnet. It must not be:
+  - the declared gateway, or the default route's gateway;
+  - that network's first host (Docker's default gateway);
+  - its network or broadcast address;
+  - the container itself.
+- **The rule:** one `ACCEPT` per peer, **TCP to that port only**, in the `FW_PEERS` chain. It sits after the
+  `FIREWALL_ALLOW_SSH=0` reject, so an explicit SSH-off still wins.
+- **Fails closed:** anything that doesn't pass is skipped with a warning, including names, bad ports and public
+  addresses.
+- **The exception to "knobs only remove rules":** unlike the other knobs, this one adds a rule. It's set only from
+  the service's compose environment (before boot, through `env_keep` like the others), and the one-shot lock stops a
+  re-run from changing it.
+
 **Regression test:** `.devcontainer/tests/firewall-matrix.sh <kernel image> [drop-in dir]` runs `init-firewall.sh` in
 throwaway containers (default bridge and a user-defined network) and checks each path against the locked and default
-policies. Run it after any change to `init-firewall.sh`.
+policies. Its peers case runs on two pinned networks, one with a custom gateway at `.254`, and checks:
+- the allowed literal's port is open, and the same peer's other port is blocked;
+- another container on the network, the gateway and the custom gateway are blocked;
+- refused: names, an entry without `@gateway`, the custom gateway requested as the peer, a gateway declared on
+  another network, the default gateway, the network address, a public address, a bad port;
+- a peer recreated at its pinned address is reachable again.
+
+Run it after any change to `init-firewall.sh` or `firewall-lib.sh`.
 
 ## Consumer smoke checklist
 

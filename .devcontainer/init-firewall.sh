@@ -410,6 +410,19 @@ if [ "${FIREWALL_ALLOW_SSH:-1}" = "0" ]; then
     iptables -A OUTPUT -p tcp --dport 22 -j REJECT --reject-with icmp-admin-prohibited
 fi
 
+# --- Compose peers (FIREWALL_ALLOW_PEERS) ------------------------------------
+# A narrow exception for containers that keep FIREWALL_ALLOW_LOCAL_NETWORKS=0
+# but must reach one sibling service: "ip:port@gateway[,...]", IPv4 literals of a
+# peer address and its network's gateway, both pinned in compose (never names;
+# the gateway is required: see fw_peers_apply in firewall-lib.sh). The peer must
+# be a private address on one of this container's own attached networks, not a
+# gateway; the rule is TCP to that port only.
+iptables -N FW_PEERS
+iptables -A OUTPUT -j FW_PEERS
+if [ -n "${FIREWALL_ALLOW_PEERS:-}" ]; then
+    fw_peers_apply "$FIREWALL_ALLOW_PEERS" echo
+fi
+
 # Then allow only specific outbound traffic to allowed domains
 iptables -A OUTPUT -m set --match-set allowed-domains dst -j ACCEPT
 
