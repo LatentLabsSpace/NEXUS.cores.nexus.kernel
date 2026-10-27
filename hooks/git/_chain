@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# _chain — the kernel's git hook folder replaces the repo's hook folder for a
+# Claude Code session (core.hooksPath), so every hook name here first runs the
+# hook git would have run without us, with the same arguments, stdin and exit
+# status. "Without us" means the effective core.hooksPath from every other
+# source (repo, global, system, earlier GIT_CONFIG_* entries: the last one
+# wins, as in git), else the repo's own hooks folder.
+# Usage: _chain <hook-name> [args…]
+name="$1"; shift
+ours="$(cd "$(dirname "$0")" && pwd)"
+prior=""
+while IFS=$'\t' read -r _origin value; do
+  [[ -n "$value" && "$value" != "$ours" ]] && prior="$value"
+done < <(git config --show-origin --get-all core.hooksPath 2>/dev/null)
+if [[ -n "$prior" ]]; then
+  # A relative core.hooksPath is relative to where hooks run (git's cwd for
+  # hooks: the top of the working tree); "~/" expands as git expands it.
+  [[ "$prior" == "~/"* ]] && prior="$HOME/${prior#\~/}"
+  own="$prior/$name"
+else
+  own="$(git rev-parse --git-common-dir 2>/dev/null)/hooks/$name"
+fi
+if [[ -x "$own" ]]; then
+  "$own" "$@" || exit $?
+fi
+exit 0

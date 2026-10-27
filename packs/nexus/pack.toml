@@ -1,0 +1,201 @@
+# nexus — the org-wide Gas City pack every nexus city imports.
+#
+# One reviewed surface for who serves each fleet role: the model-serving
+# upstreams (credentials as $VAR refs only) and the lane each role runs on.
+# It wraps the upstream gascity role set, so roles keep their runtime names
+# (holodeck/gc.design-author, …) and the upstream formulas that address them
+# by name keep working. See README.md for how a city imports it.
+
+[pack]
+name = "nexus"
+schema = 2
+version = "0.1.0"
+description = "Org-wide fleet lanes: model-serving upstreams and the lane each gascity role runs on"
+
+# Upstream gascity role set (design-author, implementation-worker, reviewers…),
+# pinned. A city imports this pack per rig under binding "gc"; the consuming
+# binding wins over this nested one, so the roles keep their gc.* names.
+[imports.roles]
+source = "https://github.com/gastownhall/gascity-packs/tree/main/gascity/roles"
+version = "sha:3b3b89f2011e06d84459aa7bea1552382f13930a"
+
+# Harnesses the lanes use. Merged into the city's provider catalog; a city's
+# own [providers.<name>] wins (e.g. a tuned ready_delay_ms).
+[providers.claude]
+base = "builtin:claude"
+
+[providers.codex]
+base = "builtin:codex"
+
+# ---------------------------------------------------------------------------
+# Upstreams — who serves the model. Named for the service, not the harness:
+# gc renders the abstract fields onto each harness's own env vars
+# (claude -> ANTHROPIC_*, codex -> OPENAI_*).
+#
+# Credentials are $VAR refs to names no harness reads, so a key reaches a
+# session only through the upstream that selects it. An unset var renders as
+# an empty value (the session then fails auth), never an error at load.
+#
+# A session inherits the controller's environment (gascity's provider
+# passthrough plus the tmux server's own env), and an upstream only overwrites
+# the keys it renders. So every upstream blanks ("" unsets in the session):
+#   - both GASCITY_* credential names: each key is expanded from the
+#     controller's env into the selected harness variable only, and never
+#     reaches a session as its raw name;
+#   - the other services' ANTHROPIC_* / OPENAI_* variables.
+# A city should therefore give every agent an upstream ([agent_defaults]
+# upstream); an agent with none inherits the controller env unfiltered.
+#
+# Harness binding workaround: gascity v1.5.0 drops a harness's upstream_env
+# binding when the provider is declared as `base = "builtin:claude"` (as
+# `gc init` writes it), so abstract fields fail to resolve and the session is
+# skipped. Fixed upstream in gastownhall/gascity#5985 (open). Until then the
+# two Anthropic-protocol upstreams name their target variables explicitly
+# (`*_env`, which takes precedence over the binding). Both endpoints speak the
+# Anthropic protocol, so they only make sense for the claude harness anyway.
+# ---------------------------------------------------------------------------
+
+[upstreams.fireworks]
+description = "Fireworks (Anthropic-compatible endpoint); GLM-5.3 main, GLM-5.3 Flash background"
+base_url = "https://api.fireworks.ai/inference"
+auth_token = "$GASCITY_FIREWORKS_API_KEY"
+# Explicit target names (see "Harness binding workaround" above).
+base_url_env = "ANTHROPIC_BASE_URL"
+auth_token_env = "ANTHROPIC_AUTH_TOKEN"
+
+[upstreams.fireworks.env]
+GASCITY_FIREWORKS_API_KEY = ""
+GASCITY_ANTHROPIC_API_KEY = ""
+OPENAI_API_KEY = ""
+OPENAI_BASE_URL = ""
+ANTHROPIC_API_KEY = ""
+ANTHROPIC_MODEL = "accounts/fireworks/models/glm-5p3"
+ANTHROPIC_DEFAULT_HAIKU_MODEL = "accounts/fireworks/models/glm-5p3-flash"
+
+[upstreams.anthropic]
+description = "Anthropic API, billed per token"
+base_url = "https://api.anthropic.com"
+api_key = "$GASCITY_ANTHROPIC_API_KEY"
+base_url_env = "ANTHROPIC_BASE_URL"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[upstreams.anthropic.env]
+GASCITY_FIREWORKS_API_KEY = ""
+GASCITY_ANTHROPIC_API_KEY = ""
+OPENAI_API_KEY = ""
+OPENAI_BASE_URL = ""
+ANTHROPIC_AUTH_TOKEN = ""
+ANTHROPIC_MODEL = ""
+ANTHROPIC_DEFAULT_HAIKU_MODEL = "claude-haiku-5-5"
+
+[upstreams.chatgpt]
+description = "The Codex CLI's own ChatGPT sign-in (subscription allowance, no API key); renders no credentials"
+
+[upstreams.chatgpt.env]
+GASCITY_FIREWORKS_API_KEY = ""
+GASCITY_ANTHROPIC_API_KEY = ""
+ANTHROPIC_API_KEY = ""
+ANTHROPIC_AUTH_TOKEN = ""
+ANTHROPIC_BASE_URL = ""
+ANTHROPIC_MODEL = ""
+ANTHROPIC_DEFAULT_HAIKU_MODEL = ""
+OPENAI_API_KEY = ""
+OPENAI_BASE_URL = ""
+
+# ---------------------------------------------------------------------------
+# Lanes — which upstream, harness, model and effort each role runs on.
+#
+#   build   fireworks  claude  GLM-5.3            implementation, triage,
+#                                                  publishing, run operation
+#   design  chatgpt    codex   gpt-6-sol, high     requirements, design, plans
+#   review  chatgpt    codex   gpt-6-sol, high     reviews, synthesis, gaps
+#
+# Opt-in lanes, assigned to no role by default (TD 2026-10-25: the Anthropic
+# API is too costly for routine fleet work): upstream "anthropic" with
+# claude-opus-5-5, or claude-fable-5-1 for the hardest design work. A city
+# moves one role with one patch of its own, e.g. in its rig overrides:
+#   upstream = "anthropic", provider = "claude",
+#   option_defaults = { model = "claude-opus-5-5", effort = "high" }
+#
+# Codex-lane roles are capped at one live session each: they spend the
+# account's weekly allowance, shared with every other use of the login.
+# ---------------------------------------------------------------------------
+
+# build lane
+[[patches.agent]]
+name = "implementation-worker"
+provider = "claude"
+upstream = "fireworks"
+
+[[patches.agent]]
+name = "issue-triager"
+provider = "claude"
+upstream = "fireworks"
+
+[[patches.agent]]
+name = "publisher"
+provider = "claude"
+upstream = "fireworks"
+
+[[patches.agent]]
+name = "run-operator"
+provider = "claude"
+upstream = "fireworks"
+
+# design lane
+[[patches.agent]]
+name = "requirements-planner"
+provider = "codex"
+upstream = "chatgpt"
+max_active_sessions = 1
+option_defaults = { model = "gpt-6-sol", effort = "high" }
+
+[[patches.agent]]
+name = "design-author"
+provider = "codex"
+upstream = "chatgpt"
+max_active_sessions = 1
+option_defaults = { model = "gpt-6-sol", effort = "high" }
+
+[[patches.agent]]
+name = "task-decomposer"
+provider = "codex"
+upstream = "chatgpt"
+max_active_sessions = 1
+option_defaults = { model = "gpt-6-sol", effort = "high" }
+
+# review lane
+[[patches.agent]]
+name = "design-implementation-reviewer"
+provider = "codex"
+upstream = "chatgpt"
+max_active_sessions = 1
+option_defaults = { model = "gpt-6-sol", effort = "high" }
+
+[[patches.agent]]
+name = "design-test-risk-reviewer"
+provider = "codex"
+upstream = "chatgpt"
+max_active_sessions = 1
+option_defaults = { model = "gpt-6-sol", effort = "high" }
+
+[[patches.agent]]
+name = "implementation-reviewer"
+provider = "codex"
+upstream = "chatgpt"
+max_active_sessions = 1
+option_defaults = { model = "gpt-6-sol", effort = "high" }
+
+[[patches.agent]]
+name = "review-synthesizer"
+provider = "codex"
+upstream = "chatgpt"
+max_active_sessions = 1
+option_defaults = { model = "gpt-6-sol", effort = "high" }
+
+[[patches.agent]]
+name = "gap-analyst"
+provider = "codex"
+upstream = "chatgpt"
+max_active_sessions = 1
+option_defaults = { model = "gpt-6-sol", effort = "high" }
